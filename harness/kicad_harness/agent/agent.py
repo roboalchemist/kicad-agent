@@ -191,7 +191,10 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
             floating = await asyncio.to_thread(lambda: len(Schematic.load(ws.schematic_path).unconnected_pins()))
         except Exception:
             floating = 0
+        facts = await asyncio.to_thread(_parts_facts, ctx)
         fake = {
+            "schematic_missing": facts["missing_from_schematic"],
+            "board_missing": facts["missing_from_board"],
             "erc_counts": erc_counts,
             "board_laid_out": ws.board_path.is_file(),
             "unconnected_pins": floating,
@@ -202,9 +205,70 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
     board_hash, index = await _working(ctx)
     drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
     drc = goals.with_board_state(drc, ws.board_path.is_file())
+    facts = await asyncio.to_thread(_parts_facts, ctx)
+    drc = {
+        **drc,
+        "schematic_missing": facts["missing_from_schematic"],
+        "board_missing": facts["missing_from_board"],
+    }
     evaluation = goals.evaluate(ws.goal(), index, drc, threads)
     ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
     return evaluation
+
+
+def _parts_facts(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
+    """Ground truth about which parts exist: schematic symbols and board footprints."""
+    from kicad_harness.agent.audit import design_parts
+
+    return design_parts(ctx.deps.services, _ws(ctx))
+
+
+async def _adversarial_audit(ctx: RunContext[HarnessDeps], model: Any = None) -> tuple[bool, str]:
+    """Have a reviewer check the artifacts against the original brief.
+
+    Returns ``(complete, summary)``. The reviewer is a separate agent with adversarial
+    instructions, so it is not grading the working agent's own summary.
+    """
+    from pydantic_ai import Agent as _Agent
+
+    from kicad_harness.agent import models as model_catalog
+    from kicad_harness.agent.audit import AUDIT_INSTRUCTIONS, AuditResult, render_inventory, summarise
+
+    # A scripted/test model cannot review anything, and a real review would make network calls
+    # inside tests; only real runs get audited.
+    if type(model).__name__ in ("FunctionModel", "TestModel"):
+        return True, ""
+
+    svc = ctx.deps.services
+    ws = _ws(ctx)
+    brief = ws.brief() or (ws.goal() or {}).get("summary")
+    if not brief:
+        return True, ""  # nothing was asked for, so nothing to audit against
+
+    facts = await asyncio.to_thread(_parts_facts, ctx)
+    evaluation = await _evaluate(ctx)
+    inventory = {
+        "brief": brief,
+        "parts_on_board": facts["board_refs"],
+        "parts_in_schematic": facts["schematic_refs"],
+        "missing_from_schematic": facts["missing_from_schematic"],
+        "missing_from_board": facts["missing_from_board"],
+        "goal_criteria": [
+            {"id": c["id"], "passed": c["passed"], "detail": c["detail"]}
+            for c in evaluation.get("criteria", [])
+        ],
+    }
+    reviewer = _Agent(
+        model_catalog.resolve(current_model()),
+        output_type=AuditResult,
+        instructions=AUDIT_INSTRUCTIONS,
+    )
+    try:
+        result = await reviewer.run(render_inventory(brief, inventory))
+    except Exception:
+        return True, ""  # a broken reviewer must not block the loop
+    verdict: AuditResult = result.output
+    return verdict.complete, summarise(verdict)
 
 
 def _trailers(ctx: RunContext[HarnessDeps], tool: str) -> dict[str, str]:
@@ -1577,9 +1641,22 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         if isinstance(output, DeferredToolRequests) or not ctx.deps.state.loop or not ctx.deps.state.design:
             return output
         evaluation = await _evaluate(ctx)
+        overdue = bool(
+            ctx.deps.max_minutes and time.time() - ctx.deps.started_at > ctx.deps.max_minutes * 60
+        )
         if evaluation["met"]:
-            return output
-        if ctx.deps.max_minutes and time.time() - ctx.deps.started_at > ctx.deps.max_minutes * 60:
+            # The goal is the agent's own yardstick, so it is not trusted on its own: a separate
+            # reviewer checks the artifacts against the original brief before this can finish.
+            if overdue:
+                return output
+            complete, gaps = await _adversarial_audit(ctx, agent.model)
+            if complete:
+                return output
+            raise ModelRetry(
+                "The goal criteria pass, but a reviewer checked the design against the original "
+                f"brief and found it incomplete. Fix these before finishing: {gaps}"
+            )
+        if overdue:
             return f"{output}\n\n(Stopped: time budget reached with the goal unmet: {goals.failing_summary(evaluation)})"
         raise ModelRetry(
             "The goal is not met yet: "

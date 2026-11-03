@@ -64,7 +64,7 @@ def test_create_imports_the_board(ws, config, board_src):
         "*.kicad_prl", "fp-info-cache", "*-backups/", "~*.lck", ".history/", "skidl/", "*_skidl.erc",
     ]
     assert ws.goal() == DEFAULT_GOAL
-    assert [c["id"] for c in ws.goal()["criteria"]] == ["drc", "routed", "review"]
+    assert [c["id"] for c in ws.goal()["criteria"]] == ["drc", "routed", "review", "parity"]
     assert ws.branch() == "main" and not ws.dirty()
     [version] = ws.log()
     assert version["subject"] == version["message"] == "Import blinker.kicad_pcb"

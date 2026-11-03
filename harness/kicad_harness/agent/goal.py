@@ -33,6 +33,7 @@ CRITERIA: dict[str, tuple[tuple[str, ...], str]] = {
     "erc_warnings": (("max",), "ERC warnings <= {max}"),
     "board_laid_out": (("min",), "board laid out from the schematic"),
     "unconnected_pins": (("max",), "unconnected schematic pins <= {max}"),
+    "schematic_parity": (("max_missing",), "schematic and board describe the same parts (missing <= {max_missing})"),
 }
 
 Measure = Callable[[dict, str, str], dict]
@@ -192,6 +193,21 @@ def evaluate_criterion(
             key = "errors" if ctype == "erc_errors" else "warnings"
             value = int(erc_counts.get(key, 0))
             result.update(value=value, passed=value <= c["max"], detail=f"{value} ERC {key} (max {c['max']})")
+        elif ctype == "schematic_parity":
+            missing_sch = list((drc or {}).get("schematic_missing") or [])
+            missing_brd = list((drc or {}).get("board_missing") or [])
+            allowed = int(c.get("max_missing", 0))
+            total = len(missing_sch) + len(missing_brd)
+            result.update(
+                value={"missing_from_schematic": missing_sch, "missing_from_board": missing_brd},
+                passed=total <= allowed,
+                detail=(
+                    f"{len(missing_sch)} board parts absent from the schematic"
+                    f"{' (' + ', '.join(missing_sch[:8]) + ')' if missing_sch else ''}, "
+                    f"{len(missing_brd)} schematic parts absent from the board"
+                    f"{' (' + ', '.join(missing_brd[:8]) + ')' if missing_brd else ''} (max {allowed})"
+                ),
+            )
         elif ctype == "unconnected_pins":
             value = int((drc or {}).get("unconnected_pins", 0))
             result.update(value=value, passed=value <= c["max"],
@@ -216,11 +232,27 @@ def evaluate_criterion(
     return result
 
 
+def mandatory_criteria(goal: dict[str, Any], drc: dict | None) -> list[dict[str, Any]]:
+    """Criteria that always apply, even if the agent's own goal omits them.
+
+    The agent writes its own goal, so without a floor it can pass by measuring only what it
+    happened to finish. Schematic/board parity is cheap, mechanical, and catches a design that
+    simply omits parts the brief asked for.
+    """
+    have = {c.get("type") for c in goal.get("criteria", [])}
+    extra: list[dict[str, Any]] = []
+    if "schematic_missing" in (drc or {}) or "board_missing" in (drc or {}):
+        if "schematic_parity" not in have:
+            extra.append({"id": "parity", "type": "schematic_parity", "max_missing": 0})
+    return extra
+
+
 def evaluate(
     goal: dict[str, Any], index: dict, drc: dict, threads: list[dict], measure: Measure | None = None
 ) -> dict[str, Any]:
     """Evaluate every criterion. Returns {met, criteria: [...]}."""
-    results = [evaluate_criterion(c, index, drc, threads, measure) for c in goal.get("criteria", [])]
+    criteria = list(goal.get("criteria", [])) + mandatory_criteria(goal, drc)
+    results = [evaluate_criterion(c, index, drc, threads, measure) for c in criteria]
     return {"met": bool(results) and all(r["passed"] for r in results), "criteria": results}
 
 

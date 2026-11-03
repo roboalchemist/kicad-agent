@@ -63,6 +63,7 @@ DEFAULT_GOAL: dict[str, Any] = {
         {"id": "drc", "type": "drc_errors", "max": 0},
         {"id": "routed", "type": "unconnected", "max": 0},
         {"id": "review", "type": "open_threads", "severities": ["must_fix"], "max": 0},
+        {"id": "parity", "type": "schematic_parity", "max_missing": 0},
     ],
     "budget": {"max_requests": 120, "max_minutes": 30},
 }
@@ -75,6 +76,7 @@ DEFAULT_SCHEMATIC_GOAL: dict[str, Any] = {
         {"id": "wired", "type": "unconnected_pins", "max": 0},
         {"id": "erc", "type": "erc_errors", "max": 0},
         {"id": "board", "type": "board_laid_out", "min": 1},
+        {"id": "parity", "type": "schematic_parity", "max_missing": 0},
     ],
     "budget": {"max_requests": 120, "max_minutes": 45},
 }

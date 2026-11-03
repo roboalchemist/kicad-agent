@@ -1169,14 +1169,25 @@ def create_app() -> FastAPI:
                 erc_counts = report["counts"]
             except Exception:
                 erc_counts = {"errors": 1, "warnings": 0}
+            from kicad_harness.agent.audit import design_parts
+
+            parts = await asyncio.to_thread(design_parts, svc, ws)
             return goals.evaluate(
-                ws.goal(), {}, {"erc_counts": erc_counts, "board_laid_out": ws.board_path.is_file()},
+                ws.goal(), {}, {"erc_counts": erc_counts,
+                                "board_laid_out": ws.board_path.is_file(),
+                                "schematic_missing": parts["missing_from_schematic"],
+                                "board_missing": parts["missing_from_board"]},
                 svc.store.review.list(design),
             )
         board_hash = await _rev_hash(svc, ws, rev)
         index = await asyncio.to_thread(svc.artifacts.index, board_hash)
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
         drc = goals.with_board_state(drc, ws.board_path.is_file())
+        from kicad_harness.agent.audit import design_parts
+
+        parts = await asyncio.to_thread(design_parts, svc, ws)
+        drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
+               "board_missing": parts["missing_from_board"]}
         return goals.evaluate(ws.goal(), index, drc, svc.store.review.list(design))
 
     # ------------------------------------------------------------------ steering (messages mid-run)

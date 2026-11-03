@@ -54,7 +54,7 @@ def test_prompt_project_starts_in_the_schematic_phase(services, new_project):
     assert not ws.board_path.exists()
     goal = ws.goal()
     assert {c["type"] for c in goal["criteria"]} == {
-        "unconnected_pins", "erc_errors", "board_laid_out",
+        "unconnected_pins", "erc_errors", "board_laid_out", "schematic_parity",
     }
     # The brief reaches the agent through the goal summary.
     assert "555" in goal["summary"]
