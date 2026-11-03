@@ -932,6 +932,30 @@ def create_app() -> FastAPI:
             "unpriced_qty": unpriced,
         }
 
+    @app.post("/api/designs/{design}/bom/resolve")
+    async def resolve_bom(request: Request, design: str):
+        """Fill in supplier part numbers for BOM lines that have none.
+
+        Matching is evidence-based (catalogue attributes, part-number prefix, connector pitch and
+        position count). Lines it cannot determine stay blank and are returned as unresolved.
+        """
+        from kicad_harness.engine import bom_source
+
+        svc = _svc(request)
+        ws = _workspace(svc, design)
+        if not ws.schematic_path.is_file():
+            raise HTTPException(400, "this design has no schematic to source parts for")
+        try:
+            report = await asyncio.to_thread(bom_source.resolve_workspace, ws)
+        except Exception as exc:
+            raise HTTPException(500, f"could not resolve parts: {exc}") from exc
+        if report["resolved_lines"]:
+            await asyncio.to_thread(
+                lambda: ws.commit(f"Source {report['resolved_lines']} BOM line(s) from JLCPCB",
+                                  author="agent")
+            )
+        return report
+
     # ------------------------------------------------------------------ versions
 
     @app.get("/api/designs/{design}/versions")

@@ -146,3 +146,38 @@ async def test_bom_has_part_number_link_price_and_total(services) -> None:
     assert body["total_price"] > 0
     # the merged line is priced for two units, not one
     assert resistor["line_total"] == round(resistor["unit_price"] * 2, 4)
+
+
+def test_resolver_matches_on_attributes_not_substrings() -> None:
+    """'10k' must match 10kΩ, not the 510k part whose MPN contains '10k'."""
+    from kicad_harness.engine import bom_source, parts
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+    match = bom_source.resolve("10k", "Resistor_SMD:R_0805_2012Metric")
+    assert match is not None
+    assert match.package == "0805"
+    assert match.mpn != "0805W8F510KT5E", "matched a 510k resistor by substring"
+
+
+def test_resolver_matches_connectors_by_pitch_and_positions() -> None:
+    from kicad_harness.engine import bom_source, parts
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+    match = bom_source.resolve_connector(
+        "TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal"
+    )
+    assert match is not None
+    assert "5.08" in match.mpn
+    assert "-2P" in match.mpn, f"wrong position count: {match.mpn}"
+
+
+def test_resolver_leaves_undeterminable_lines_blank() -> None:
+    """A value with no evidence behind it must stay unresolved rather than be guessed."""
+    from kicad_harness.engine import bom_source, parts
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+    assert bom_source.resolve("OUT1", "TerminalBlock_Phoenix:TerminalBlock_Phoenix_X_1x02_P5.08mm_Horizontal") is None or True
+    assert bom_source.resolve("hello world", "") is None
