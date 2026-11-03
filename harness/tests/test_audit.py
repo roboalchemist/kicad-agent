@@ -49,3 +49,40 @@ def test_inventory_hands_the_reviewer_facts() -> None:
 def test_audit_result_summary_names_gaps() -> None:
     audit = AuditResult(complete=False, gaps=[AuditGap(requirement="16 relays", problem="only 2 relays present")])
     assert "16 relays" in summarise(audit) and "only 2 relays" in summarise(audit)
+
+
+def test_three_way_sync_flags_any_divergence() -> None:
+    """BOM, schematic and board must agree on refs, values and footprints."""
+    from kicad_harness.agent.audit import compare_sources
+
+    agree = {"bom": {"R1": ("10k", "R0805")},
+             "schematic": {"R1": ("10k", "R0805")},
+             "board": {"R1": ("10k", "R0805")}}
+    assert compare_sources(agree) == []
+
+    # the real pi-relay shape: a part on the board that neither the BOM nor schematic lists
+    missing = {"bom": {"R1": ("10k", "R0805")},
+               "schematic": {"R1": ("10k", "R0805")},
+               "board": {"R1": ("10k", "R0805"), "K1": ("relay", "Relay")}}
+    assert any("K1" in g and "missing" in g for g in compare_sources(missing))
+
+    drifted = {"bom": {"R1": ("10k", "R0805")},
+               "schematic": {"R1": ("10k", "R0805")},
+               "board": {"R1": ("12k", "R0805")}}
+    assert any("R1" in g and "value differs" in g for g in compare_sources(drifted))
+
+    rehoused = {"bom": {"R1": ("10k", "R0805")},
+                "schematic": {"R1": ("10k", "R0805")},
+                "board": {"R1": ("10k", "R0603")}}
+    assert any("R1" in g and "footprint differs" in g for g in compare_sources(rehoused))
+
+
+def test_design_sync_is_a_mandatory_loop_criterion() -> None:
+    """An agent-authored goal cannot omit the three-way check."""
+    goal = {"criteria": [{"id": "drc", "type": "drc_errors", "max": 0}]}
+    drc = {"counts": {"errors": 0}, "sync_gaps": ["K1: missing from schematic"]}
+    evaluation = goals.evaluate(goal, {"board": {"edge_bbox": [0, 0, 10, 10]}, "footprints": []}, drc, [])
+    by_id = {c["id"]: c for c in evaluation["criteria"]}
+    assert by_id["sync"]["passed"] is False
+    assert "K1" in by_id["sync"]["detail"]
+    assert evaluation["met"] is False

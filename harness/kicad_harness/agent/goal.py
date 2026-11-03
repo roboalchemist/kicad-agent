@@ -33,6 +33,7 @@ CRITERIA: dict[str, tuple[tuple[str, ...], str]] = {
     "erc_warnings": (("max",), "ERC warnings <= {max}"),
     "board_laid_out": (("min",), "board laid out from the schematic"),
     "unconnected_pins": (("max",), "unconnected schematic pins <= {max}"),
+    "design_sync": (("max_gaps",), "BOM, schematic and board agree (gaps <= {max_gaps})"),
     "requirements": (("max_short",), "brief requirements met (shortfalls <= {max_short})"),
     "schematic_parity": (("max_missing",), "schematic and board describe the same parts (missing <= {max_missing})"),
 }
@@ -194,6 +195,12 @@ def evaluate_criterion(
             key = "errors" if ctype == "erc_errors" else "warnings"
             value = int(erc_counts.get(key, 0))
             result.update(value=value, passed=value <= c["max"], detail=f"{value} ERC {key} (max {c['max']})")
+        elif ctype == "design_sync":
+            gaps_ = list((drc or {}).get("sync_gaps") or [])
+            allowed = int(c.get("max_gaps", 0))
+            result.update(value=gaps_, passed=len(gaps_) <= allowed,
+                          detail=("; ".join(gaps_[:6]) or "BOM, schematic and board agree")
+                          + (f" ({len(gaps_)} gap(s), max {allowed})" if gaps_ else ""))
         elif ctype == "requirements":
             gaps_ = list((drc or {}).get("requirement_gaps") or [])
             allowed = int(c.get("max_short", 0))
@@ -248,6 +255,8 @@ def mandatory_criteria(goal: dict[str, Any], drc: dict | None) -> list[dict[str,
     """
     have = {c.get("type") for c in goal.get("criteria", [])}
     extra: list[dict[str, Any]] = []
+    if "sync_gaps" in (drc or {}) and "design_sync" not in have:
+        extra.append({"id": "sync", "type": "design_sync", "max_gaps": 0})
     if (drc or {}).get("requirements") and "requirements" not in have:
         extra.append({"id": "brief", "type": "requirements", "max_short": 0})
     if "schematic_missing" in (drc or {}) or "board_missing" in (drc or {}):

@@ -1187,7 +1187,8 @@ def create_app() -> FastAPI:
 
         parts = await asyncio.to_thread(design_parts, svc, ws)
         drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
-               "board_missing": parts["missing_from_board"]}
+               "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
+               "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"]}
         return goals.evaluate(ws.goal(), index, drc, svc.store.review.list(design))
 
     # ------------------------------------------------------------------ steering (messages mid-run)

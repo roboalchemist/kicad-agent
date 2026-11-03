@@ -319,7 +319,8 @@ def _eval_inputs(svc, ws, name):
 
     parts = design_parts(svc, ws)
     drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
-           "board_missing": parts["missing_from_board"]}
+           "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
+           "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"]}
     return svc.artifacts.index(board_hash), drc, threads
 
 

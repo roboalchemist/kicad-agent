@@ -195,6 +195,9 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
         fake = {
             "schematic_missing": facts["missing_from_schematic"],
             "board_missing": facts["missing_from_board"],
+            "sync_gaps": facts["sync_gaps"],
+            "requirements": facts["requirements"],
+            "requirement_gaps": facts["requirement_gaps"],
             "erc_counts": erc_counts,
             "board_laid_out": ws.board_path.is_file(),
             "unconnected_pins": floating,
@@ -210,6 +213,9 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
         **drc,
         "schematic_missing": facts["missing_from_schematic"],
         "board_missing": facts["missing_from_board"],
+        "sync_gaps": facts["sync_gaps"],
+        "requirements": facts["requirements"],
+        "requirement_gaps": facts["requirement_gaps"],
     }
     evaluation = goals.evaluate(ws.goal(), index, drc, threads)
     ctx.deps.state.goal = GoalStatus.model_validate(evaluation)

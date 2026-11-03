@@ -295,7 +295,7 @@ async def test_server_agui_and_rest(services, design):
 
         goal_status = (await client.get(f"/api/designs/{name}/goal/status")).json()
         # "parity" is mandatory: the goal cannot be graded without it, even for an imported board.
-        assert {c["id"] for c in goal_status["criteria"]} == {"drc", "routed", "review", "parity"}
+        assert {c["id"] for c in goal_status["criteria"]} == {"drc", "routed", "review", "parity", "sync"}
 
         restored = (await client.post(f"/api/designs/{name}/versions/{import_sha}/restore")).json()
         assert restored["subject"].startswith("Restore")

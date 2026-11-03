@@ -38,68 +38,116 @@ def part_refs(schematic_refs: list[str], board_refs: list[str]) -> dict[str, Any
 
 
 def design_parts(svc: Any, ws: Any) -> dict[str, Any]:
-    """Refs on the schematic and on the board, plus the parity comparison.
+    """Every view of the design, and every disagreement between them.
 
-    One implementation shared by the agent, the REST API and the CLI so every evaluator sees the
-    same numbers.
+    The BOM, the schematic and the board are three views of one design. They must name the same
+    parts with the same values and footprints; anything else means one of them is stale. This is
+    the single implementation used by the agent, the REST API and the CLI, so all three grade
+    identically.
     """
+    from kicad_harness.agent import requirements as requirements_mod
     from kicad_harness.engine.schematic import Schematic
 
-    sch: list[str] = []
+    sch_parts: list[dict[str, Any]] = []
     if ws.schematic_path.is_file():
         try:
-            sch = [p.reference for p in Schematic.load(ws.schematic_path).placements()]
+            sch_parts = [
+                {"ref": p.reference, "value": p.value, "footprint": p.footprint}
+                for p in Schematic.load(ws.schematic_path).placements()
+                if not p.reference.startswith("#")
+            ]
         except Exception:
-            sch = []
-    brd: list[str] = []
+            sch_parts = []
+
+    brd_parts: list[dict[str, Any]] = []
     if ws.board_path.is_file():
         try:
             data = ws.board_path.read_bytes()
             board_hash, _ = svc.artifacts.materialize(data)
-            brd = [f.get("ref", "") for f in svc.artifacts.index(board_hash).get("footprints", [])]
+            brd_parts = [
+                {"ref": f.get("ref", ""), "value": f.get("value", ""), "footprint": f.get("footprint", "")}
+                for f in svc.artifacts.index(board_hash).get("footprints", [])
+                if not str(f.get("ref", "")).startswith("#")
+            ]
         except Exception:
-            brd = []
-    from kicad_harness.agent import requirements as requirements_mod
+            brd_parts = []
 
-    parts: list[dict[str, Any]] = []
-    if ws.schematic_path.is_file():
-        try:
-            from kicad_harness.engine.schematic import Schematic as _S
+    # What the BOM would list: the schematic when there is one, else the board (see /api/.../bom).
+    bom_parts = sch_parts or brd_parts
 
-            parts += [{"ref": p.reference, "value": p.value, "footprint": p.footprint}
-                      for p in _S.load(ws.schematic_path).placements()]
-        except Exception:
-            pass
-    if ws.board_path.is_file():
-        try:
-            data = ws.board_path.read_bytes()
-            h, _ = svc.artifacts.materialize(data)
-            parts += [{"ref": f.get("ref", ""), "value": f.get("value", ""),
-                       "footprint": f.get("footprint", "")}
-                      for f in svc.artifacts.index(h).get("footprints", [])]
-        except Exception:
-            pass
-
-    # Countable demands in the brief ("16 relays") — leaving them out is a failure, not silence.
-    wanted = []
+    wanted: list[dict[str, Any]] = []
     try:
         wanted = ws.requirements()
     except Exception:
         wanted = []
-    requirement_gaps = requirements_mod.gaps(wanted, parts) if wanted else []
+    requirement_gaps = requirements_mod.gaps(wanted, sch_parts + brd_parts) if wanted else []
 
-    parity = part_refs(sch, brd)
-    if not sch:
-        # A design imported from a .kicad_pcb has no schematic at all; that is not a parity
-        # failure, so nothing is reported as missing.
+    sources = {
+        "bom": part_table(bom_parts),
+        "schematic": part_table(sch_parts),
+        "board": part_table(brd_parts),
+    }
+    # With no schematic the bom/board pair is the whole design; comparing an absent schematic
+    # would report every part as missing from it, which is not a divergence.
+    compared = {k: v for k, v in sources.items() if v}
+    sync_gaps = compare_sources(compared) if len(compared) > 1 else []
+
+    parity = part_refs([p["ref"] for p in sch_parts], [p["ref"] for p in brd_parts])
+    if not sch_parts:
         parity["missing_from_schematic"] = []
+
     return {
-        "schematic_refs": sorted(sch),
-        "board_refs": sorted(brd),
+        "schematic_refs": sorted(p["ref"] for p in sch_parts),
+        "board_refs": sorted(p["ref"] for p in brd_parts),
         "requirements": wanted,
         "requirement_gaps": requirement_gaps,
+        "sync_gaps": sync_gaps,
         **parity,
     }
+
+
+def _footprint_name(footprint: str) -> str:
+    """The footprint without its library nickname: the board index and the schematic differ on
+    whether ``Lib:Name`` is included, and that is not a divergence."""
+    return footprint.split(":")[-1].strip().lower()
+
+
+def part_table(parts: Iterable[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+    """``{ref: (value, footprint)}`` for the parts in one source."""
+    table: dict[str, tuple[str, str]] = {}
+    for part in parts:
+        ref = str(part.get("ref") or "")
+        if not ref or ref.startswith("#"):
+            continue
+        table[ref] = (
+            str(part.get("value") or "").strip(),
+            _footprint_name(str(part.get("footprint") or "")),
+        )
+    return table
+
+
+def compare_sources(sources: dict[str, dict[str, tuple[str, str]]]) -> list[str]:
+    """Every disagreement between sources, as human-readable lines.
+
+    The BOM, the schematic and the board must name the same parts with the same values; any
+    difference is a gap, because each is a different view of one design.
+    """
+    names = list(sources)
+    gaps: list[str] = []
+    for ref in sorted({r for table in sources.values() for r in table}):
+        present = {name: sources[name].get(ref) for name in names}
+        holders = [name for name, entry in present.items() if entry is not None]
+        if len(holders) != len(names):
+            missing = [name for name in names if present[name] is None]
+            gaps.append(f"{ref}: missing from {', '.join(missing)}")
+            continue
+        values = {name: (present[name] or ("", ""))[0] for name in names}
+        if len({v for v in values.values() if v}) > 1:
+            gaps.append(f"{ref}: value differs ({', '.join(f'{n}={v}' for n, v in values.items())})")
+        footprints = {name: (present[name] or ("", ""))[1] for name in names}
+        if len({f for f in footprints.values() if f}) > 1:
+            gaps.append(f"{ref}: footprint differs ({', '.join(f'{n}={f}' for n, f in footprints.items())})")
+    return gaps
 
 
 class AuditGap(BaseModel):
