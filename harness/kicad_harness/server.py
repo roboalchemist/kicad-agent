@@ -130,6 +130,32 @@ def group_bom(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     return lines, sum(line["qty"] for line in lines)
 
 
+def summarise_tiers(lines: list[dict[str, Any]], total_qty: int) -> dict[str, Any]:
+    """Basic-vs-extended coverage, counted per *part number*.
+
+    One terminal block used nineteen times is one extended part to order and one reel fee, so
+    counting lines would overstate the problem by an order of magnitude.
+    """
+    tiers: dict[str, str] = {}
+    for line in lines:
+        code = str(line.get("lcsc") or "").upper()
+        if code:
+            tiers.setdefault(code, line.get("tier") or "extended")
+    units = {"basic": 0, "extended": 0}
+    for line in lines:
+        code = str(line.get("lcsc") or "").upper()
+        if code in tiers:
+            units[tiers[code]] += line["qty"]
+    basic = sum(1 for tier in tiers.values() if tier == "basic")
+    return {
+        "parts": len(tiers),
+        "basic_parts": basic,
+        "extended_parts": len(tiers) - basic,
+        "basic_units": units["basic"],
+        "units": total_qty,
+    }
+
+
 class SseFanout:
     """Share live-state probes between the SSE streams of one design.
 
@@ -922,6 +948,9 @@ def create_app() -> FastAPI:
             else:
                 line["line_total"] = round(float(unit) * line["qty"], 4)
                 total_price += line["line_total"]
+        # Basic-vs-extended coverage. JLCPCB charges a reel fee for every extended part, so this
+        # is the number that decides whether a board is cheap to assemble.
+        tier_summary = summarise_tiers(lines, total_qty)
         return {
             "phase": ws.phase(),
             "source": source,
@@ -930,7 +959,27 @@ def create_app() -> FastAPI:
             "total_qty": total_qty,
             "total_price": round(total_price, 2),
             "unpriced_qty": unpriced,
+            "tier_summary": tier_summary,
         }
+
+    @app.get("/api/designs/{design}/bom/basic")
+    async def bom_basic(request: Request, design: str):
+        """How much of the BOM is basic-tier, and why the rest is not.
+
+        "Use as many basic parts as possible" is only checkable per part: each extended line is
+        reported with the basic alternative the catalogue offers, or the reason none exists
+        (JLCPCB has no basic relay/connector/electrolytic at any price, for instance).
+        """
+        from kicad_harness.engine import bom_source
+
+        svc = _svc(request)
+        ws = _workspace(svc, design)
+        if not ws.schematic_path.is_file():
+            raise HTTPException(400, "this design has no schematic to source parts for")
+        try:
+            return await asyncio.to_thread(bom_source.basic_report, ws)
+        except Exception as exc:
+            raise HTTPException(500, f"could not read the BOM: {exc}") from exc
 
     @app.post("/api/designs/{design}/bom/resolve")
     async def resolve_bom(request: Request, design: str):

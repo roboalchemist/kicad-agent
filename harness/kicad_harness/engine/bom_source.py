@@ -114,7 +114,8 @@ class Match:
 
 
 def _rows(package: str | None, limit: int = 400, attribute: str | None = None,
-          mpn_like: str | None = None, extra_like: str | None = None) -> Iterable[tuple]:
+          mpn_like: str | None = None, extra_like: str | None = None,
+          basic_only: bool = False) -> Iterable[tuple]:
     """Candidates, prefiltered in SQL so the scan is bounded.
 
     ``attribute`` narrows to parts that carry that parameter (``Resistance``); ``mpn_like``
@@ -137,6 +138,8 @@ def _rows(package: str | None, limit: int = 400, attribute: str | None = None,
     if extra_like:
         sql += " AND extra LIKE ?"
         params.append(extra_like)
+    if basic_only:
+        sql += " AND basic = 1"
     sql += " ORDER BY basic DESC, stock DESC LIMIT ?"
     params.append(limit)
     with sqlite3.connect(f"file:{path}?immutable=1", uri=True, timeout=10) as conn:
@@ -153,8 +156,12 @@ def _unit_price(raw: str | None) -> float | None:
     return breaks[0].get("price") if breaks else None
 
 
-def resolve(value: str, footprint: str = "") -> Match | None:
-    """Find the catalogue part a BOM line names, or ``None`` when it cannot be determined."""
+def resolve(value: str, footprint: str = "", *, basic_only: bool = False) -> Match | None:
+    """Find the catalogue part a BOM line names, or ``None`` when it cannot be determined.
+
+    ``basic_only`` restricts the search to JLCPCB *basic* parts — the ones with no extended-part
+    fee. It is used both when choosing a part and when auditing an existing choice.
+    """
     quantity = parse_value(value)
     package = package_hint(footprint)
 
@@ -164,7 +171,7 @@ def resolve(value: str, footprint: str = "") -> Match | None:
         if len(text) < 4 or not re.search(r"\d", text):
             return None
         hits = [
-            row for row in _rows(package, limit=200, mpn_like=text)
+            row for row in _rows(package, limit=200, mpn_like=text, basic_only=basic_only)
             if text.upper() in str(row[1]).upper()
         ]
         if not hits:
@@ -174,7 +181,8 @@ def resolve(value: str, footprint: str = "") -> Match | None:
 
     candidates: list[tuple[tuple, Match]] = []
     for lcsc, mfr, pkg, stock, basic, price, extra in _rows(package, limit=2000,
-                                                            attribute=quantity["attr"]):
+                                                            attribute=quantity["attr"],
+                                                            basic_only=basic_only):
         try:
             attrs = json.loads(extra or "{}").get("attributes") or {}
         except ValueError:
@@ -205,29 +213,77 @@ def resolve(value: str, footprint: str = "") -> Match | None:
     return best
 
 
-def resolve_workspace(ws: Any) -> dict[str, Any]:
-    """Fill in LCSC part numbers for a workspace's BOM lines, from the catalogue.
+def _match_line(value: str, footprint: str, *, basic_only: bool = False) -> Match | None:
+    """The catalogue part for one BOM line, trying value, then connector geometry, then fuse."""
+    return (
+        resolve(value, footprint, basic_only=basic_only)
+        or resolve_connector(footprint, basic_only=basic_only)
+        or resolve_fuse(value, footprint, basic_only=basic_only)
+    )
 
-    Writes the code onto every symbol that uses the part, so the BOM, the schematic and the
-    board all carry it. Returns a report naming what resolved and what did not — an unresolved
-    line stays blank rather than being guessed.
+
+def _line_groups(doc: Any) -> dict[tuple[str, str], list[str]]:
+    """``(value, footprint) -> refs``, grouped exactly as the BOM groups lines."""
+    groups: dict[tuple[str, str], list[str]] = {}
+    for placement in doc.placements():
+        if placement.reference.startswith("#"):  # power flags are not parts
+            continue
+        groups.setdefault((placement.value.strip(), placement.footprint.strip()), []).append(
+            placement.reference
+        )
+    return groups
+
+
+def _current_lcsc(doc: Any, refs: list[str]) -> str:
+    for placement in doc.placements():
+        if placement.reference in refs:
+            code = (placement.properties or {}).get("LCSC")
+            if code:
+                return code
+    return ""
+
+
+def resolve_workspace(ws: Any, *, prefer_basic: bool = True, resourced: bool = True) -> dict[str, Any]:
+    """Fill in — or improve — the LCSC part numbers on a workspace's BOM lines.
+
+    Sourcing is **basic-first**: JLCPCB charges a reel fee for every *extended* part, so a part
+    is only chosen as extended when no basic part satisfies the same value, package and rating.
+    With ``resourced`` (the default) already-sourced lines are re-examined too: an extended part
+    is replaced by an equivalent basic one when the catalogue has one, and otherwise left alone.
+
+    Writes the codes onto every symbol using the part, so the BOM, the schematic and the board
+    agree. Returns a report naming what resolved, what was switched to a basic part, and what
+    could not be determined at all — an unresolved line stays blank rather than being guessed.
     """
     from .schematic import Schematic
 
     doc = Schematic.load(ws.schematic_path)
-    placements = [p for p in doc.placements() if not p.reference.startswith("#")]
-    # Group the same way the BOM does, so one lookup fills every reference using the part.
-    lines: dict[tuple[str, str], list[str]] = {}
-    for placement in placements:
-        key = (placement.value.strip(), placement.footprint.strip())
-        lines.setdefault(key, []).append(placement.reference)
-
     resolved: list[dict[str, Any]] = []
+    switched: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
-    for (value, footprint), refs in sorted(lines.items()):
-        if any((p.properties or {}).get("LCSC") for p in placements if p.reference in refs):
-            continue  # already sourced
-        match = resolve(value, footprint) or resolve_connector(footprint) or resolve_fuse(value, footprint)
+
+    for (value, footprint), refs in sorted(_line_groups(doc).items()):
+        current = _current_lcsc(doc, refs)
+        if current:
+            if not (resourced and prefer_basic):
+                continue
+            if _tier_of(current) == "basic":
+                continue  # already the cheapest tier there is
+            basic = _match_line(value, footprint, basic_only=True)
+            if basic is None or basic.lcsc.upper() == current.upper():
+                continue  # no basic equivalent: keep the extended part
+            for ref in refs:
+                doc.set_symbol_property(ref, "LCSC", basic.lcsc)
+                doc.set_symbol_property(ref, "MPN", basic.mpn)
+            switched.append({"value": value, "refs": refs, "from": current, **basic.to_dict()})
+            continue
+
+        match = _match_line(value, footprint, basic_only=prefer_basic) or (
+            None if prefer_basic else _match_line(value, footprint)
+        )
+        if match is None and prefer_basic:
+            # Nothing basic fits; an extended part still beats an unsourced line.
+            match = _match_line(value, footprint)
         if match is None:
             unresolved.append({"value": value, "footprint": footprint, "refs": refs})
             continue
@@ -236,10 +292,133 @@ def resolve_workspace(ws: Any) -> dict[str, Any]:
             doc.set_symbol_property(ref, "MPN", match.mpn)
         resolved.append({"value": value, "refs": refs, **match.to_dict()})
 
-    if resolved:
+    if resolved or switched:
         doc.save()
-    return {"resolved": resolved, "unresolved": unresolved,
-            "resolved_lines": len(resolved), "unresolved_lines": len(unresolved)}
+    return {
+        "resolved": resolved,
+        "switched": switched,
+        "unresolved": unresolved,
+        "resolved_lines": len(resolved),
+        "switched_lines": len(switched),
+        "unresolved_lines": len(unresolved),
+    }
+
+
+def _catalogue_row(lcsc: str) -> dict[str, Any] | None:
+    """One part as the catalogue knows it: manufacturer, package, tier, stock, price, category."""
+    path = parts.db_path()
+    key = (lcsc or "").strip().upper().lstrip("C")
+    if path is None or not key.isdigit():
+        return None
+    with sqlite3.connect(f"file:{path}?immutable=1", uri=True, timeout=10) as conn:
+        row = conn.execute(
+            "SELECT mfr, package, stock, basic, price, extra FROM components WHERE lcsc = ?",
+            (int(key),),
+        ).fetchone()
+    if row is None:
+        return None
+    payload = json.loads(row[5] or "{}")
+    category = payload.get("category") or {}
+    return {
+        "lcsc": f"C{key}",
+        "mpn": row[0],
+        "package": row[1],
+        "stock": row[2],
+        "basic": bool(row[3]),
+        "tier": "basic" if row[3] else "extended",
+        "unit_price": _unit_price(row[4]),
+        "category": category.get("name2") or category.get("name1") or "",
+    }
+
+
+def _tier_of(lcsc: str) -> str | None:
+    row = _catalogue_row(lcsc)
+    return row["tier"] if row else None
+
+
+@lru_cache(maxsize=1)
+def _basic_categories() -> dict[str, int]:
+    """How many *basic* parts JLCPCB has per category — the evidence behind "no basic part"."""
+    path = parts.db_path()
+    if path is None:
+        return {}
+    with sqlite3.connect(f"file:{path}?immutable=1", uri=True, timeout=10) as conn:
+        rows = conn.execute(
+            """SELECT COALESCE(json_extract(extra, '$.category.name2'),
+                               json_extract(extra, '$.category.name1'), ''), COUNT(*)
+               FROM components WHERE basic = 1 GROUP BY 1"""
+        ).fetchall()
+    return {str(name): count for name, count in rows}
+
+
+def _why_no_basic(value: str, footprint: str, current: dict[str, Any] | None) -> str:
+    """A sentence saying why an extended line has no basic replacement."""
+    category = (current or {}).get("category") or ""
+    package = (current or {}).get("package") or package_hint(footprint) or "this package"
+    what = value or "this value"
+    if not category:
+        # The catalogue has no metadata for this part, so there is nothing to reason about
+        # beyond the value and package themselves.
+        return f"no basic part matches {what} in {package}"
+    available = _basic_categories().get(category, 0)
+    if available == 0:
+        return f"JLCPCB's basic library has no {category} at all"
+    return f"basic {category} parts exist, but none is {what} in {package}"
+
+
+def basic_report(ws: Any) -> dict[str, Any]:
+    """Basic-vs-extended status of a design's BOM, with the reason for every extended part.
+
+    "Use as many basic parts as possible" is only answerable if you can see, per part, whether a
+    basic replacement exists. Each line reports its tier, the basic alternative the catalogue
+    offers (if any), and — when there is none — why not.
+    """
+    from .schematic import Schematic
+
+    doc = Schematic.load(ws.schematic_path)
+    lines: list[dict[str, Any]] = []
+    for (value, footprint), refs in sorted(_line_groups(doc).items()):
+        lcsc = _current_lcsc(doc, refs)
+        current = _catalogue_row(lcsc) if lcsc else None
+        tier = (current or {}).get("tier")
+        item: dict[str, Any] = {
+            "value": value,
+            "footprint": footprint,
+            "refs": sorted(refs),
+            "qty": len(refs),
+            "lcsc": lcsc,
+            "mpn": (current or {}).get("mpn", ""),
+            "package": (current or {}).get("package", ""),
+            "category": (current or {}).get("category", ""),
+            "tier": tier,
+            "basic": tier == "basic",
+            "basic_alternative": None,
+            "reason": "",
+        }
+        if tier != "basic":
+            alternative = _match_line(value, footprint, basic_only=True)
+            if alternative is not None and alternative.lcsc.upper() != lcsc.upper():
+                item["basic_alternative"] = alternative.to_dict()
+            else:
+                item["reason"] = _why_no_basic(value, footprint, current)
+        lines.append(item)
+
+    basic = [l for l in lines if l["basic"]]
+    extended = [l for l in lines if not l["basic"]]
+    return {
+        "lines": lines,
+        "line_count": len(lines),
+        "basic_lines": len(basic),
+        "extended_lines": len(extended),
+        "basic_units": sum(l["qty"] for l in basic),
+        "total_units": sum(l["qty"] for l in lines),
+        "replaceable": [l for l in lines if l["basic_alternative"]],
+        "extended_parts": [
+            {"value": l["value"], "lcsc": l["lcsc"], "mpn": l["mpn"], "category": l["category"],
+             "reason": l["reason"]}
+            for l in extended
+        ],
+    }
 
 
 _CONNECTOR = re.compile(r"_(?P<rows>\d)x(?P<pos>\d+)_")
@@ -288,7 +467,7 @@ def _gender_ok(footprint: str, category: str) -> bool:
     return True
 
 
-def resolve_connector(footprint: str) -> Match | None:
+def resolve_connector(footprint: str, *, basic_only: bool = False) -> Match | None:
     """Match a connector by its footprint: pitch, row count and positions per row.
 
     Connector values in a BOM are usually net names ("OUT1"), not part numbers, so the footprint
@@ -308,7 +487,8 @@ def resolve_connector(footprint: str) -> Match | None:
     pitch_text = f"{want_pitch:.2f}".rstrip("0").rstrip(".") + "mm"
     best: Match | None = None
     for lcsc, mfr, pkg, stock, basic, price, extra in _rows(
-        None, limit=6000, attribute="Pitch", extra_like=f'%"Pitch": "{pitch_text}"%'
+        None, limit=6000, attribute="Pitch", extra_like=f'%"Pitch": "{pitch_text}"%',
+        basic_only=basic_only,
     ):
         try:
             payload = json.loads(extra or "{}")
@@ -334,13 +514,14 @@ def resolve_connector(footprint: str) -> Match | None:
     return best
 
 
-def resolve_fuse(value: str, footprint: str) -> Match | None:
+def resolve_fuse(value: str, footprint: str, *, basic_only: bool = False) -> Match | None:
     """A fuse rating ("2A") matched by current in the package the footprint names."""
     amount = parse_value(value)
     if not amount or amount["attr"] != "Current":
         return None
     package = package_hint(footprint)
-    for lcsc, mfr, pkg, stock, basic, price, extra in _rows(package, limit=2000):
+    for lcsc, mfr, pkg, stock, basic, price, extra in _rows(package, limit=2000,
+                                                            basic_only=basic_only):
         try:
             payload = json.loads(extra or "{}")
         except ValueError:

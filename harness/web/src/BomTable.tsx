@@ -1,14 +1,15 @@
 /** Bill of materials: one row per distinct part, with every reference that uses it.
  *
  * Soldering a board means ordering per *part*, not per component, so identical parts collapse
- * into a single line (R1, R2, R10) the way a real BOM does. Supplier columns appear when the
- * schematic records an LCSC part number.
+ * into a single line (R1, R2, R10) the way a real BOM does. Supplier columns always render, and
+ * the header states how much of the BOM is basic-tier — JLCPCB charges a reel fee for every
+ * extended part, so "how many are basic" is a cost question, not a cosmetic one.
  */
 
 import { useEffect, useState } from "react";
 
 import { api } from "./api.ts";
-import type { BomResponse } from "./types.ts";
+import type { BomBasicReport, BomResponse } from "./types.ts";
 
 function money(value?: number | null): string {
   if (value == null) return "—";
@@ -20,16 +21,45 @@ function shortFootprint(footprint: string): string {
   return name || "—";
 }
 
+/** Distinct extended parts with the reason each has no basic replacement. */
+function extendedReasons(report: BomBasicReport) {
+  const byCode = new Map<string, { value: string; lcsc: string; category: string; reason: string; qty: number }>();
+  for (const line of report.lines) {
+    if (line.basic) continue;
+    const key = line.lcsc || `${line.value}|${line.footprint}`;
+    const seen = byCode.get(key);
+    if (seen) {
+      seen.qty += line.qty;
+      continue;
+    }
+    byCode.set(key, {
+      value: line.value,
+      lcsc: line.lcsc,
+      category: line.category,
+      reason: line.reason,
+      qty: line.qty,
+    });
+  }
+  return [...byCode.values()].sort((a, b) => b.qty - a.qty);
+}
+
 export function BomTable({ design }: { design: string }) {
   const [bom, setBom] = useState<BomResponse | null>(null);
+  const [basic, setBasic] = useState<BomBasicReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     setError(null);
-    api
-      .bom(design)
-      .then((data) => live && setBom(data))
+    Promise.all([
+      api.bom(design),
+      api.bomBasic(design).catch(() => null), // the audit is a bonus, never a reason to fail
+    ])
+      .then(([table, audit]) => {
+        if (!live) return;
+        setBom(table);
+        setBasic(audit);
+      })
       .catch((e) => live && setError(String(e instanceof Error ? e.message : e)));
     return () => {
       live = false;
@@ -39,6 +69,8 @@ export function BomTable({ design }: { design: string }) {
   // The columns are part of the BOM's shape, not a property of the data: hiding them when no
   // part has been sourced yet makes the table look like it has no part numbers or prices at all.
   const hasSupplier = true;
+  const tiers = bom?.tier_summary;
+  const extended = basic ? extendedReasons(basic) : [];
 
   return (
     <div className="bom-view" data-testid="bom-view">
@@ -51,6 +83,11 @@ export function BomTable({ design }: { design: string }) {
               }${bom.source !== "none" ? ` · from the ${bom.source}` : ""}`
             : "loading…"}
         </span>
+        {tiers && tiers.parts > 0 && (
+          <span className="badge badge-ok" data-testid="bom-tier">
+            {tiers.basic_parts} of {tiers.parts} parts basic
+          </span>
+        )}
       </div>
 
       {error && <div className="error-text">{error.slice(0, 300)}</div>}
@@ -141,6 +178,24 @@ export function BomTable({ design }: { design: string }) {
             </tfoot>
           </table>
         </div>
+      )}
+
+      {basic && basic.extended_lines > 0 && (
+        <details className="bom-basic" data-testid="bom-basic">
+          <summary>
+            {extended.length} part{extended.length === 1 ? "" : "s"} can't be basic — why
+          </summary>
+          <ul>
+            {extended.map((part) => (
+              <li key={part.lcsc || part.value}>
+                <span className="bom-basic-value">{part.value}</span>
+                {part.lcsc && <span className="bom-lcsc-code">{part.lcsc}</span>}
+                {" — "}
+                {part.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </div>
   );

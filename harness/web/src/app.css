@@ -1747,3 +1747,10 @@ div.tool-card > .tool-card-header { padding: 3px 8px; }
 .bom-table th:nth-child(8), .bom-table td:nth-child(8) { width: 6%; }
 .bom-table th:nth-child(9), .bom-table td:nth-child(9) { width: 5%; }
 .bom-scroll { overflow-x: hidden; }
+
+/* Basic-tier audit: why the parts that can't be basic aren't. */
+.bom-basic { margin: 8px 4px 0; font-size: 11.5px; color: var(--muted); }
+.bom-basic summary { cursor: pointer; user-select: none; }
+.bom-basic ul { margin: 6px 0 0 14px; padding: 0; }
+.bom-basic li { margin-bottom: 3px; line-height: 1.35; }
+.bom-basic-value { color: var(--fg); font-weight: 600; }

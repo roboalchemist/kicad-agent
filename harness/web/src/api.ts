@@ -1,6 +1,7 @@
 /** Thin fetch wrappers over the harness REST API. Everything is relative so Vite proxies /api. */
 
 import type {
+  BomBasicReport,
   BomResponse,
   BranchInfo,
   DesignDetail,
@@ -72,6 +73,7 @@ export const api = {
     ),
   schematic: (d: string) => get<SchematicInfo>(`/api/designs/${d}/schematic`),
   bom: (d: string) => get<BomResponse>(`/api/designs/${d}/bom`),
+  bomBasic: (d: string) => get<BomBasicReport>(`/api/designs/${d}/bom/basic`),
   usage: (d: string) => get<UsageInfo>(`/api/designs/${d}/usage`),
   schematicSvgUrl: (d: string, rev = "working", sheet = 0, version?: string | null) =>
     `/api/designs/${d}/schematic.svg?rev=${encodeURIComponent(rev)}&sheet=${sheet}` +

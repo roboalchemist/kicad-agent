@@ -216,3 +216,118 @@ def test_socket_footprints_only_accept_female_parts() -> None:
     assert bom_source._gender_ok("Connector:PinSocket_1x02", "Connectors Female Headers")
     assert not bom_source._gender_ok("Connector:PinSocket_1x02", "Connectors Pin Headers")
     assert bom_source._gender_ok("Connector:PinHeader_1x02", "Connectors Pin Headers")
+
+
+def test_tier_summary_counts_part_numbers_not_lines() -> None:
+    """One terminal block used nineteen times is one extended part, not nineteen."""
+    from kicad_harness.server import summarise_tiers
+
+    lines = [
+        {"refs": ["R1", "R2"], "qty": 2, "lcsc": "C17414", "tier": "basic"},
+        {"refs": ["J1"], "qty": 1, "lcsc": "C2898709", "tier": "extended"},
+        {"refs": ["J2"], "qty": 1, "lcsc": "C2898709", "tier": "extended"},
+        {"refs": ["J3"], "qty": 1, "lcsc": "C2898709", "tier": "extended"},
+        {"refs": ["X1"], "qty": 1, "lcsc": "", "tier": None},
+    ]
+    summary = summarise_tiers(lines, 5)
+    assert summary == {"parts": 2, "basic_parts": 1, "extended_parts": 1,
+                       "basic_units": 2, "units": 5}
+
+
+def test_basic_only_search_never_returns_an_extended_part() -> None:
+    """The basic-first policy has to be enforceable: asking for basic may only yield basic."""
+    from kicad_harness.engine import bom_source, parts
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+    for value, footprint in [
+        ("10k", "Resistor_SMD:R_0805_2012Metric"),
+        ("100nF", "Capacitor_SMD:C_0805_2012Metric"),
+        ("SS34", "Diode_SMD:D_SMA"),
+        ("G5LE-14 5VDC", "Relay_THT:Relay_SPDT_Omron-G5LE-1"),
+    ]:
+        match = bom_source.resolve(value, footprint, basic_only=True)
+        assert match is None or match.basic, f"{value} resolved to an extended part under basic_only"
+
+
+def test_extended_relay_is_reported_as_having_no_basic_equivalent() -> None:
+    """The reason must name the missing category, not blame the value for a gap that is total."""
+    from kicad_harness.engine import bom_source
+
+    reason = bom_source._why_no_basic(
+        "G5LE-14 5VDC",
+        "Relay_THT:Relay_SPDT_Omron-G5LE-1",
+        {"category": "Power Relays", "package": "Plugin,16.5x22.5mm"},
+    )
+    assert "no Power Relays" in reason, reason
+
+
+def test_extended_part_in_a_category_with_basics_explains_the_mismatch() -> None:
+    from kicad_harness.engine import bom_source, parts
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+    reason = bom_source._why_no_basic(
+        "1M", "Resistor_SMD:R_0805_2012Metric",
+        {"category": "Chip Resistor - Surface Mount", "package": "0805"},
+    )
+    assert "basic Chip Resistor" in reason and "none is 1M" in reason, reason
+
+
+async def test_resolve_resources_an_extended_part_to_a_basic_one(services) -> None:
+    """Re-sourcing must take a basic equivalent when one exists, without being asked twice.
+
+    A 100nF 0805 cap written as the extended CL21B104KBCNNNC has an exactly equivalent basic
+    part (CC0805KRX7R9BB104). Leaving the extended code in place would cost a reel fee for no
+    electrical difference at all.
+    """
+    from kicad_harness.engine import parts
+    from kicad_harness.engine.schematic import Schematic, read_library
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+
+    name = "bom-basic-first"
+    ws = Workspace.create_schematic(services.config, name, "a 100nF cap sourced as an extended part")
+    doc = Schematic.load(ws.schematic_path)
+    doc.libraries["Device"] = read_library("/usr/share/kicad/symbols/Device.kicad_sym")
+    doc.add_symbol("Device:C", "C1", 100.0, 100.0, value="100nF",
+                   footprint="Capacitor_SMD:C_0805_2012Metric")
+    doc.set_symbol_property("C1", "LCSC", "C1711")  # extended CL21B104KBCNNNC
+    doc.save()
+
+    async with _client(services) as client:
+        report = (await client.post(f"/api/designs/{name}/bom/resolve")).json()
+        body = (await client.get(f"/api/designs/{name}/bom")).json()
+
+    assert report["switched_lines"] == 1, report
+    assert report["switched"][0]["from"] == "C1711"
+    cap = next(line for line in body["lines"] if line["value"] == "100nF")
+    assert cap["lcsc"] == "C49678", "did not switch to the basic equivalent"
+    assert cap["tier"] == "basic"
+
+
+async def test_resolve_leaves_an_extended_part_alone_when_no_basic_equivalent_exists(services) -> None:
+    """A fuse has no basic counterpart at any price; inventing one would be worse than the fee."""
+    from kicad_harness.engine import parts
+    from kicad_harness.engine.schematic import Schematic, read_library
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+
+    name = "bom-basic-none"
+    ws = Workspace.create_schematic(services.config, name, "a 2A fuse")
+    doc = Schematic.load(ws.schematic_path)
+    doc.libraries["Device"] = read_library("/usr/share/kicad/symbols/Device.kicad_sym")
+    doc.add_symbol("Device:Fuse", "F1", 100.0, 100.0, value="2A",
+                   footprint="Fuse:Fuse_1206_3216Metric")
+    doc.set_symbol_property("F1", "LCSC", "C3105")
+    doc.save()
+
+    async with _client(services) as client:
+        report = (await client.post(f"/api/designs/{name}/bom/resolve")).json()
+        body = (await client.get(f"/api/designs/{name}/bom")).json()
+
+    assert report["switched_lines"] == 0 and report["resolved_lines"] == 0, report
+    fuse = next(line for line in body["lines"] if line["value"] == "2A")
+    assert fuse["lcsc"] == "C3105" and fuse["tier"] == "extended"

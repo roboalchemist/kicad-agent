@@ -60,6 +60,15 @@ export interface BomLine {
   unit_price?: number | null;
 }
 
+/** Basic-vs-extended coverage: extended parts carry a per-part JLCPCB reel fee. */
+export interface BomTierSummary {
+  parts: number;
+  basic_parts: number;
+  extended_parts: number;
+  basic_units: number;
+  units: number;
+}
+
 export interface BomResponse {
   phase: Phase;
   source: "schematic" | "board" | "none";
@@ -68,6 +77,34 @@ export interface BomResponse {
   total_qty: number;
   total_price: number;
   unpriced_qty: number;
+  tier_summary?: BomTierSummary;
+}
+
+/** One line of the basic-tier audit: is there a basic part for this value, and if not, why not. */
+export interface BomBasicLine {
+  value: string;
+  footprint: string;
+  refs: string[];
+  qty: number;
+  lcsc: string;
+  mpn: string;
+  package: string;
+  category: string;
+  tier?: "basic" | "extended" | null;
+  basic: boolean;
+  basic_alternative: BomLine | null;
+  reason: string;
+}
+
+export interface BomBasicReport {
+  lines: BomBasicLine[];
+  line_count: number;
+  basic_lines: number;
+  extended_lines: number;
+  basic_units: number;
+  total_units: number;
+  replaceable: BomBasicLine[];
+  extended_parts: { value: string; lcsc: string; mpn: string; category: string; reason: string }[];
 }
 
 /** Token accounting for a project's current thread (see /api/designs/{d}/usage). */
