@@ -746,6 +746,54 @@ def create_app() -> FastAPI:
         return Response(content=plots[chosen].read_bytes(), media_type="image/svg+xml",
                         headers={"Cache-Control": "max-age=3600"})
 
+    # ------------------------------------------------------------------ run control
+
+    @app.post("/api/designs/{design}/goal/run")
+    async def run_goal(request: Request, design: str, body: dict = Body(default={})):
+        """Start (or resume) the goal loop for this design without the browser.
+
+        Runs the same headless loop the CLI uses, as a detached process: that keeps a long run
+        out of the API's event loop and writes to the same run/event store, so the UI follows it
+        like any other run. Refuses while a run for the design is already active.
+        """
+        import subprocess
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        svc = _svc(request)
+        ws = _workspace(svc, design)
+        running = [r for r in svc.store.runs.list(design) if r.get("status") == "running"]
+        if running:
+            raise HTTPException(409, f"a run is already active for {design!r}: {running[0]['run_id']}")
+
+        prompt = body.get("prompt") or body.get("nudge")
+        thread = body.get("thread")
+        # The CLI entry point lives beside the interpreter in the harness venv.
+        args = [str(_Path(_sys.executable).parent / "kicad-harness")]
+        args += ["run", design, "--loop"]
+        if prompt:
+            args += ["--prompt", str(prompt)]
+        if thread:
+            args += ["--thread", str(thread)]
+        log_dir = _Path(svc.config.home) / "runs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{design}-{int(time.time())}.log"
+        try:
+            log = open(log_path, "ab")
+            proc = subprocess.Popen(args, cwd=str(_Path(__file__).resolve().parent.parent),
+                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        except Exception as exc:
+            raise HTTPException(500, f"could not start the goal loop: {exc}") from exc
+        return {"started": True, "design": design, "pid": proc.pid, "thread": thread,
+                "prompt": prompt, "log": str(log_path)}
+
+    @app.get("/api/designs/{design}/goal/runs")
+    async def goal_runs(request: Request, design: str):
+        """Runs started through the API (their pid is in the log line above them)."""
+        svc = _svc(request)
+        _workspace(svc, design)
+        return [r for r in svc.store.runs.list(design) if r.get("source") == "cli"][:10]
+
     # ------------------------------------------------------------------ context usage
 
     @app.get("/api/designs/{design}/usage")
