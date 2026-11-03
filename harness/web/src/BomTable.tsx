@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "./api.ts";
-import type { BomLine, BomResponse } from "./types.ts";
+import type { BomResponse } from "./types.ts";
 
 function money(value?: number | null): string {
   if (value == null) return "—";
@@ -36,7 +36,9 @@ export function BomTable({ design }: { design: string }) {
     };
   }, [design]);
 
-  const hasSupplier = (bom?.lines ?? []).some((line: BomLine) => line.lcsc);
+  // The columns are part of the BOM's shape, not a property of the data: hiding them when no
+  // part has been sourced yet makes the table look like it has no part numbers or prices at all.
+  const hasSupplier = true;
 
   return (
     <div className="bom-view" data-testid="bom-view">
@@ -120,13 +122,19 @@ export function BomTable({ design }: { design: string }) {
                 {hasSupplier && <td />}
                 {hasSupplier && <td />}
                 {hasSupplier && <td />}
-                {hasSupplier && <td className="bom-total-price">{money(bom.total_price)}</td>}
+                {hasSupplier && (
+                  <td className="bom-total-price">
+                    {bom.total_price > 0 ? money(bom.total_price) : "—"}
+                  </td>
+                )}
               </tr>
-              {hasSupplier && bom.unpriced_qty > 0 && (
-                <tr className="bom-note">
-                  <td colSpan={8}>
-                    {bom.unpriced_qty} part{bom.unpriced_qty === 1 ? "" : "s"} have no known price and are
-                    not included in the total.
+              {bom.unpriced_qty > 0 && (
+                <tr className="bom-note" data-testid="bom-unpriced">
+                  <td colSpan={9}>
+                    {bom.unpriced_qty} part{bom.unpriced_qty === 1 ? "" : "s"} have no supplier part
+                    number yet, so they are not in the total. Record an LCSC code per part (the agent
+                    does this when it sources parts with find_parts / check_part) and the part number,
+                    link and price fill in.
                   </td>
                 </tr>
               )}
