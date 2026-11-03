@@ -164,9 +164,9 @@ async def test_schematic_tools_edit_and_commit(services, new_project):
     assert deps.state.schematic_hash
 
 
-async def test_schematic_edits_refused_after_the_board_exists(services, new_project):
+async def test_schematic_edits_are_allowed_after_the_board_exists(services, new_project):
+    """The schematic is a view of the design, so layout must not lock it."""
     name, ws = new_project
-    # Pretend the board phase already happened.
     ws.set_phase("board")
     script = Script([[("add_symbol", {"symbol": "Device:R", "ref": "R9", "x": 10.0, "y": 10.0})], "done"])
     agent = build_agent()
@@ -176,7 +176,7 @@ async def test_schematic_edits_refused_after_the_board_exists(services, new_proj
 
     from kicad_harness.engine.schematic import Schematic
 
-    assert Schematic.load(ws.schematic_path).placements() == []
+    assert [p.reference for p in Schematic.load(ws.schematic_path).placements()] == ["R9"]
 
 
 async def test_skidl_failure_returns_a_readable_error(services, new_project):

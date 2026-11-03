@@ -86,3 +86,26 @@ def test_design_sync_is_a_mandatory_loop_criterion() -> None:
     assert by_id["sync"]["passed"] is False
     assert "K1" in by_id["sync"]["detail"]
     assert evaluation["met"] is False
+
+
+def test_schematic_is_never_frozen() -> None:
+    """The schematic is a view of the design, not a phase artifact: edits must not be refused."""
+    import inspect
+
+    from kicad_harness.agent import agent as agent_mod
+
+    for fn in ("_schematic_edit", "generate_schematic_skidl", "start_board_layout"):
+        source = inspect.getsource(getattr(agent_mod, fn, None) or agent_mod.build_agent)
+        if fn != "build_agent":
+            assert "schematic is final" not in source, f"{fn} still freezes the schematic"
+
+
+def test_reconcile_adds_missing_parts_without_rebuilding() -> None:
+    """Since the schematic can change after layout, the board is reconciled, not recreated."""
+    import inspect
+
+    from kicad_harness.engine import seed
+
+    src = inspect.getsource(seed.reconcile_board)
+    assert "add_footprint" in src, "missing parts must be placed"
+    assert "only_on_board" in src, "board-only parts must be reported, not silently dropped"

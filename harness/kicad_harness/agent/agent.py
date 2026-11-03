@@ -417,11 +417,9 @@ async def _schematic_edit(
     ``want`` names a symbol library the edit needs (e.g. "Device"); it is resolved and attached
     to the document before ``work`` runs.
     """
+    # The schematic is not frozen by layout: it is one view of the same design, so it can be
+    # edited at any time. The board is reconciled afterwards (see sync_board_to_schematic).
     ws = _ws(ctx)
-    if ws.phase() != "schematic":
-        return ToolReturn(
-            return_value={"ok": False, "error": "this design is in the board phase; the schematic is final"}
-        )
     try:
         doc = await asyncio.to_thread(_schematic, ctx, want)
         result = await asyncio.to_thread(work, doc)
@@ -1345,10 +1343,6 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         from kicad_harness.engine import skidl_gen
 
         ws = _ws(ctx)
-        if ws.phase() != "schematic":
-            return ToolReturn(return_value={
-                "ok": False, "error": "this design is already in the board phase; the schematic is final",
-            })
         try:
             validated_parts, validated_nets = skidl_gen.validate({"parts": parts, "nets": nets})
         except ValueError as exc:
@@ -1451,8 +1445,6 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         assigns the nets KiCad's netlist gives, then switches the design to the board phase.
         Call this once the schematic is complete and ERC is clean."""
         ws = _ws(ctx)
-        if ws.phase() != "schematic":
-            return ToolReturn(return_value={"ok": False, "error": "this design is already in the board phase"})
         from kicad_harness.engine import kicad_cli, seed
 
         svc = ctx.deps.services
@@ -1479,7 +1471,12 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 kicad_cli.export_netlist(ws.schematic_path, ws.path / ".netlist.net", config=svc.config).read_text()
             )
             try:
-                result = seed.seed_board(_schematic(ctx), ws.board_path, svc.engine, netlist=netlist)
+                doc = _schematic(ctx)
+                if ws.board_path.is_file():
+                    # Already laid out: bring the board in line with the edited schematic instead
+                    # of throwing the layout away.
+                    return seed.reconcile_board(doc, ws.board_path, svc.engine, netlist=netlist).to_dict()
+                result = seed.seed_board(doc, ws.board_path, svc.engine, netlist=netlist)
             finally:
                 (ws.path / ".netlist.net").unlink(missing_ok=True)
             ws.set_phase("board")

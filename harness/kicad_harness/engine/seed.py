@@ -141,3 +141,88 @@ def seed_board(
             f"{s['ref']}: {s['reason']}" for s in result.skipped[:4]
         ))
     return result
+
+
+@dataclass
+class ReconcileResult:
+    """What changed when the board was brought back in line with the schematic."""
+
+    added: list[str] = field(default_factory=list)
+    nets: dict[str, int] = field(default_factory=dict)
+    skipped: list[dict[str, str]] = field(default_factory=list)
+    only_on_board: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "added": self.added,
+            "nets": self.nets,
+            "skipped": self.skipped,
+            "only_on_board": self.only_on_board,
+        }
+
+
+def reconcile_board(
+    schematic: Schematic,
+    board_path: str | Path,
+    engine: BoardEngine,
+    *,
+    netlist: dict[str, Any] | None = None,
+    spacing: float = DEFAULT_SPACING_MM,
+) -> ReconcileResult:
+    """Bring an existing board in line with the schematic without disturbing layout.
+
+    The schematic and the board are views of one design, so editing the schematic must not throw
+    the layout away. Parts the schematic gained are placed in free space; pad nets are re-applied
+    from the netlist; parts present only on the board are reported (never silently deleted, since
+    they may carry routing).
+    """
+    board_path = Path(board_path)
+    index = engine.index(board_path)
+    on_board = {f.get("ref"): f for f in index.get("footprints", []) if f.get("ref")}
+
+    if netlist is None:
+        plan = board_netlist(schematic)
+        netlist = {
+            "components": plan["components"],
+            "nets": {name: [(m["ref"], str(m["pin"])) for m in members] for name, members in plan["nets"].items()},
+        }
+    wanted = {c["ref"]: c for c in netlist["components"] if c.get("footprint") and not str(c["ref"]).startswith("#")}
+    result = ReconcileResult()
+
+    ex, ey, ew, eh = index["board"]["edge_bbox"]
+    cols = max(1, int(max(ew - 2 * EDGE_MARGIN_MM, spacing) // spacing))
+    rows = max(1, int(max(eh - 2 * EDGE_MARGIN_MM, spacing) // spacing))
+    slot = 0
+    for ref, component in wanted.items():
+        if ref in on_board:
+            continue
+        while slot < cols * rows:
+            x = round(ex + EDGE_MARGIN_MM + (slot % cols) * spacing, 3)
+            y = round(ey + EDGE_MARGIN_MM + (slot // cols) * spacing, 3)
+            slot += 1
+            if not any(abs((f.get("x") or 0) - x) < spacing / 2 and abs((f.get("y") or 0) - y) < spacing / 2
+                       for f in on_board.values()):
+                break
+        try:
+            engine.add_footprint(board_path, component["footprint"], ref, component.get("value") or "", x, y)
+        except Exception as exc:
+            result.skipped.append({"ref": ref, "reason": str(exc)})
+            continue
+        result.added.append(ref)
+
+    for net, members in netlist["nets"].items():
+        assigned = 0
+        for ref, pin in members:
+            if ref not in wanted:
+                continue
+            try:
+                engine.set_pad_net(board_path, ref, pin, net)
+            except Exception as exc:
+                result.skipped.append({"ref": ref, "reason": f"net {net} pin {pin}: {exc}"})
+                continue
+            assigned += 1
+        if assigned:
+            result.nets[net] = assigned
+
+    result.only_on_board = sorted(set(on_board) - set(wanted))
+    return result
