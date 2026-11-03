@@ -246,50 +246,87 @@ _CONNECTOR = re.compile(r"_(?P<rows>\d)x(?P<pos>\d+)_")
 _PITCH = re.compile(r"P(?P<pitch>\d+(?:\.\d+)?)mm")
 
 
+def _geometry(attrs: dict[str, Any]) -> tuple[int, int] | None:
+    """``(rows, positions_per_row)`` from whichever vocabulary the part uses.
+
+    Male parts say "Pin Structure"/"Number of Pins"; female parts say "Holes
+    Structure"/"Number of Holes". The structure string carries the row count, so it is preferred;
+    anything that cannot be pinned down returns ``None`` and is rejected rather than assumed to
+    fit — assuming let a 1x20 socket pass for a 2x20 footprint.
+    """
+    structure = str(attrs.get("Pin Structure") or attrs.get("Holes Structure") or "")
+    match = re.match(r"^(\d+)\s*[x*]\s*(\d+)", structure)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+
+    raw_rows = str(attrs.get("Number of Rows") or "").strip()
+    rows = int(raw_rows) if raw_rows.isdigit() else (2 if "双" in raw_rows else None)
+    if not rows:
+        return None
+    per_row = str(attrs.get("Pin Number in each Row") or attrs.get("Number of PINs Per Row") or "")
+    per_row = per_row.strip().rstrip("P")
+    if per_row.isdigit():
+        return rows, int(per_row)
+    total = str(attrs.get("Number of Pins") or attrs.get("Number of Holes") or "").strip().rstrip("P")
+    if total.isdigit() and int(total) % rows == 0:
+        return rows, int(total) // rows
+    return None
+
+
+def _gender_ok(footprint: str, category: str) -> bool:
+    """A socket footprint needs a female part; a header footprint needs a pin header.
+
+    Substituting one for the other would silently order the wrong hardware, so a mismatch is
+    treated as no match at all.
+    """
+    name = footprint or ""
+    cat = (category or "").lower()
+    if "PinSocket" in name:
+        return "female" in cat or "socket" in cat
+    if "PinHeader" in name or "Pin_Header" in name:
+        return "female" not in cat and "socket" not in cat and cat != ""
+    return True
+
+
 def resolve_connector(footprint: str) -> Match | None:
-    """Match a connector by its footprint: pitch and position count.
+    """Match a connector by its footprint: pitch, row count and positions per row.
 
     Connector values in a BOM are usually net names ("OUT1"), not part numbers, so the footprint
-    is the only evidence available. A part is accepted only when the pitch and the number of
-    positions both match exactly.
+    is the only evidence available. Pitch, rows *and* positions must all match, and a socket
+    footprint only accepts a female part.
     """
     name = footprint or ""
     geometry = _CONNECTOR.search(name)
     pitch = _PITCH.search(name)
     if not geometry or not pitch:
         return None
-    positions = int(geometry.group("pos"))
-    if int(geometry.group("rows")) != 1:
-        return None  # dual-row parts are a different family; do not guess
+    want_rows = int(geometry.group("rows"))
+    want_pos = int(geometry.group("pos"))
     want_pitch = float(pitch.group("pitch"))
     is_terminal = "TerminalBlock" in name
 
-    best: Match | None = None
-    # Filter on the exact pitch in SQL: the catalogue is large and stock-ordering alone buries
-    # the right family behind thousands of unrelated parts.
     pitch_text = f"{want_pitch:.2f}".rstrip("0").rstrip(".") + "mm"
+    best: Match | None = None
     for lcsc, mfr, pkg, stock, basic, price, extra in _rows(
-        None, limit=4000, attribute="Pitch", extra_like=f'%"Pitch": "{pitch_text}"%'
+        None, limit=6000, attribute="Pitch", extra_like=f'%"Pitch": "{pitch_text}"%'
     ):
         try:
-            attrs = json.loads(extra or "{}").get("attributes") or {}
-            cats = json.loads(extra or "{}").get("category") or {}
+            payload = json.loads(extra or "{}")
         except ValueError:
             continue
+        attrs = payload.get("attributes") or {}
+        cats = payload.get("category") or {}
+        category = f"{cats.get('name1', '')} {cats.get('name2', '')}"
         if not _close(_millimetres(attrs.get("Pitch")), want_pitch):
             continue
-        if is_terminal and "terminal" not in str(cats.get("name2", "")).lower():
+        if is_terminal and "terminal" not in category.lower():
             continue
-        positions_attr = next(
-            (v for k, v in attrs.items() if k.lower() in ("number of positions", "positions", "pin/pin count")),
-            None,
-        )
-        if positions_attr and str(positions_attr).strip() != str(positions):
+        if not is_terminal and not _gender_ok(name, category):
             continue
-        if not positions_attr and f"-{positions}P" not in mfr:
+        if _geometry(attrs) != (want_rows, want_pos):
             continue
         candidate = Match(f"C{lcsc}", mfr, pkg, bool(basic), stock, _unit_price(price),
-                          f"footprint pitch {want_pitch}mm, {positions} positions")
+                          f"footprint {want_pitch}mm, {want_rows}x{want_pos}")
         if best is None or (candidate.basic and not best.basic) or (
             candidate.basic == best.basic and candidate.stock > best.stock
         ):

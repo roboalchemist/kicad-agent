@@ -181,3 +181,38 @@ def test_resolver_leaves_undeterminable_lines_blank() -> None:
         pytest.skip("no JLCPCB database here")
     assert bom_source.resolve("OUT1", "TerminalBlock_Phoenix:TerminalBlock_Phoenix_X_1x02_P5.08mm_Horizontal") is None or True
     assert bom_source.resolve("hello world", "") is None
+
+
+def test_resolver_handles_dual_row_headers() -> None:
+    """A 2x20 socket footprint needs a 2x20 part, not a 1x20 one that happens to have 20 holes."""
+    from kicad_harness.engine import bom_source, parts
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+    match = bom_source.resolve_connector(
+        "Connector_PinSocket_2.54mm:PinSocket_2x20_P2.54mm_Vertical"
+    )
+    assert match is not None
+    assert "2*20" in match.mpn or "2x20" in match.mpn, f"wrong geometry: {match.mpn}"
+    assert match.matched_by.endswith("2x20")
+
+
+def test_resolver_will_not_substitute_a_different_geometry() -> None:
+    """A 1x02 footprint must not take the 2x20 part, and vice versa."""
+    from kicad_harness.engine import bom_source, parts
+
+    if not parts.available():
+        pytest.skip("no JLCPCB database here")
+    single = bom_source.resolve_connector(
+        "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+    )
+    assert single is not None
+    assert "2*20" not in single.mpn and "2x20" not in single.mpn
+
+
+def test_socket_footprints_only_accept_female_parts() -> None:
+    from kicad_harness.engine import bom_source
+
+    assert bom_source._gender_ok("Connector:PinSocket_1x02", "Connectors Female Headers")
+    assert not bom_source._gender_ok("Connector:PinSocket_1x02", "Connectors Pin Headers")
+    assert bom_source._gender_ok("Connector:PinHeader_1x02", "Connectors Pin Headers")
