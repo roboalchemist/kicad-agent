@@ -318,10 +318,11 @@ def _eval_inputs(svc, ws, name):
     from kicad_harness.agent.audit import design_parts
     from kicad_harness.engine import kicad_cli as _kc
 
-    try:
-        drc = {**drc, "erc_counts": _kc.erc(ws.schematic_path, config=svc.config)["counts"]}
-    except Exception:
-        drc = {**drc, "erc_counts": None}
+    if ws.schematic_path.is_file():
+        try:
+            drc = {**drc, "erc_counts": _kc.erc(ws.schematic_path, config=svc.config)["counts"]}
+        except Exception:
+            drc = {**drc, "erc_counts": None}
     parts = design_parts(svc, ws)
     drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
            "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],

@@ -123,3 +123,48 @@ def test_erc_criterion_fails_when_not_measured() -> None:
         {"id": "erc", "type": "erc_errors", "max": 0}, {}, {"erc_counts": {"errors": 235}}, []
     )
     assert measured["passed"] is False and measured["value"] == 235
+
+
+# ---------------------------------------------------------------------------------------------
+# The harness floor: hard checks the agent cannot remove or relax
+
+
+def _board_payload(**extra):
+    return {"counts": {"errors": 0, "warnings": 0, "unconnected": 0}, "erc_counts": {"errors": 0},
+            "schematic_missing": [], "board_missing": [], "sync_gaps": [], **extra}
+
+
+def _index():
+    return {"board": {"edge_bbox": [0, 0, 10, 10]}, "footprints": []}
+
+
+def test_floor_applies_even_when_the_goal_omits_it() -> None:
+    """An agent-authored goal with no erc/drc criteria still gets them, at the strict values."""
+    goal = {"criteria": [{"id": "size", "type": "board_size", "max_w": 40, "max_h": 40}]}
+    drc = _board_payload(erc_counts={"errors": 235})
+    evaluation = goals.evaluate(goal, _index(), drc, [])
+    by_type = {c["type"]: c for c in evaluation["criteria"]}
+    assert by_type["erc_errors"]["passed"] is False
+    assert by_type["erc_errors"]["value"] == 235
+    assert by_type["drc_errors"]["passed"] is True
+    assert evaluation["met"] is False
+
+
+def test_floor_cannot_be_relaxed_by_the_agents_goal() -> None:
+    """Setting drc max: 99 in goal.json must not weaken the harness check."""
+    goal = {"criteria": [{"id": "drc", "type": "drc_errors", "max": 99}]}
+    drc = _board_payload(counts={"errors": 5, "warnings": 0, "unconnected": 0})
+    evaluation = goals.evaluate(goal, _index(), drc, [])
+    drc_results = [c for c in evaluation["criteria"] if c["type"] == "drc_errors"]
+    assert len(drc_results) == 1, "the agent's relaxed copy must be replaced, not appended"
+    assert drc_results[0]["passed"] is False and drc_results[0]["value"] == 5
+
+
+def test_floor_is_measured_where_it_is_measurable() -> None:
+    """Schematic-phase runs still get ERC; board checks wait until there is a board."""
+    goal = {"criteria": []}
+    schematic_only = {"erc_counts": {"errors": 1}, "schematic_missing": [], "board_missing": [],
+                      "sync_gaps": [], "requirements": []}
+    types = {c["type"] for c in goals.evaluate(goal, {}, schematic_only, [])["criteria"]}
+    assert "erc_errors" in types
+    assert "unconnected" not in types, "no board yet, so routing is not measurable"

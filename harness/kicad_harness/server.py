@@ -1237,11 +1237,12 @@ def create_app() -> FastAPI:
         from kicad_harness.agent.audit import design_parts
         from kicad_harness.engine import kicad_cli as _kc
 
-        try:
-            erc_report = await asyncio.to_thread(_kc.erc, ws.schematic_path, config=svc.config)
-            drc = {**drc, "erc_counts": erc_report["counts"]}
-        except Exception:
-            drc = {**drc, "erc_counts": None}
+        if ws.schematic_path.is_file():
+            try:
+                erc_report = await asyncio.to_thread(_kc.erc, ws.schematic_path, config=svc.config)
+                drc = {**drc, "erc_counts": erc_report["counts"]}
+            except Exception:
+                drc = {**drc, "erc_counts": None}
         parts = await asyncio.to_thread(design_parts, svc, ws)
         drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
                "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],

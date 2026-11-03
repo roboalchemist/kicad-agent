@@ -251,30 +251,63 @@ def evaluate_criterion(
     return result
 
 
-def mandatory_criteria(goal: dict[str, Any], drc: dict | None) -> list[dict[str, Any]]:
-    """Criteria that always apply, even if the agent's own goal omits them.
+# The harness floor. These are not the agent's to choose: they apply to every design, with
+# their strict values, whatever the agent wrote in goal.json. A goal may add criteria and may be
+# stricter, but it cannot relax or remove these.
+BASELINE: list[dict[str, Any]] = [
+    {"id": "erc", "type": "erc_errors", "max": 0, "needs": "schematic"},
+    {"id": "drc", "type": "drc_errors", "max": 0, "needs": "board"},
+    {"id": "routing", "type": "unconnected", "max": 0, "needs": "board"},
+    {"id": "parity", "type": "schematic_parity", "max_missing": 0, "needs": "parity"},
+    {"id": "sync", "type": "design_sync", "max_gaps": 0, "needs": "sync"},
+    {"id": "brief", "type": "requirements", "max_short": 0, "needs": "requirements"},
+]
 
-    The agent writes its own goal, so without a floor it can pass by measuring only what it
-    happened to finish. Schematic/board parity is cheap, mechanical, and catches a design that
-    simply omits parts the brief asked for.
+
+def _applicable(requirement: dict[str, Any], drc: dict | None, goal: dict[str, Any]) -> bool:
+    """Whether a baseline check can be measured with the payload we were given."""
+    drift = drc or {}
+    needs = requirement.get("needs")
+    if needs == "board":
+        return "counts" in drift
+    if needs == "schematic":
+        return "erc_counts" in drift
+    if needs == "parity":
+        return "schematic_missing" in drift or "board_missing" in drift
+    if needs == "sync":
+        return "sync_gaps" in drift
+    if needs == "requirements":
+        return bool(drift.get("requirements"))
+    return True
+
+
+def mandatory_criteria(goal: dict[str, Any], drc: dict | None) -> list[dict[str, Any]]:
+    """The baseline checks to append, pinned to their strict values.
+
+    An agent that omits ``erc`` from its goal, or relaxes it to ``max: 50``, still gets ``max: 0``
+    here — the harness measures it and the loop keeps going until it passes.
     """
-    have = {c.get("type") for c in goal.get("criteria", [])}
-    extra: list[dict[str, Any]] = []
-    if "sync_gaps" in (drc or {}) and "design_sync" not in have:
-        extra.append({"id": "sync", "type": "design_sync", "max_gaps": 0})
-    if (drc or {}).get("requirements") and "requirements" not in have:
-        extra.append({"id": "brief", "type": "requirements", "max_short": 0})
-    if "schematic_missing" in (drc or {}) or "board_missing" in (drc or {}):
-        if "schematic_parity" not in have:
-            extra.append({"id": "parity", "type": "schematic_parity", "max_missing": 0})
-    return extra
+    return [
+        {k: v for k, v in requirement.items() if k != "needs"}
+        for requirement in BASELINE
+        if _applicable(requirement, drc, goal)
+    ]
 
 
 def evaluate(
     goal: dict[str, Any], index: dict, drc: dict, threads: list[dict], measure: Measure | None = None
 ) -> dict[str, Any]:
     """Evaluate every criterion. Returns {met, criteria: [...]}."""
-    criteria = list(goal.get("criteria", [])) + mandatory_criteria(goal, drc)
+    # The harness floor replaces any same-id criterion the agent wrote, so raising a limit in
+    # goal.json has no effect.
+    floor = mandatory_criteria(goal, drc)
+    floor_ids = {c["id"] for c in floor}
+    floor_types = {c["type"] for c in floor}
+    authored = [
+        c for c in goal.get("criteria", [])
+        if c.get("id") not in floor_ids and c.get("type") not in floor_types
+    ]
+    criteria = floor + authored
     results = [evaluate_criterion(c, index, drc, threads, measure) for c in criteria]
     return {"met": bool(results) and all(r["passed"] for r in results), "criteria": results}
 

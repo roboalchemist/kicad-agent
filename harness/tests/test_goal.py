@@ -73,16 +73,17 @@ def test_evaluate_and_failing_summary():
     evaluation = g.evaluate(goal, INDEX, DRC, THREADS, fake_measure)
     assert evaluation["met"] is False
     assert [c["passed"] for c in evaluation["criteria"]] == [True, False]
-    assert "[routed]" in g.failing_summary(evaluation)
+    assert "[routing]" in g.failing_summary(evaluation)
 
 
 def test_broken_criterion_fails_without_hiding_others():
     goal = {"criteria": [crit(id="bad", type="within_region", ref="D1", region="nope"),
                          crit(id="drc", type="drc_errors", max=0)]}
     evaluation = g.evaluate(goal, INDEX, DRC, THREADS, fake_measure)
-    assert evaluation["criteria"][0]["passed"] is False
-    assert "could not evaluate" in evaluation["criteria"][0]["detail"]
-    assert evaluation["criteria"][1]["passed"] is True
+    by_id = {c["id"]: c for c in evaluation["criteria"]}
+    assert by_id["bad"]["passed"] is False
+    assert "could not evaluate" in by_id["bad"]["detail"]
+    assert by_id["drc"]["passed"] is True
 
 
 def test_validate_goal():
