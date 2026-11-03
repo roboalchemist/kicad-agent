@@ -59,12 +59,47 @@ def design_parts(svc: Any, ws: Any) -> dict[str, Any]:
             brd = [f.get("ref", "") for f in svc.artifacts.index(board_hash).get("footprints", [])]
         except Exception:
             brd = []
+    from kicad_harness.agent import requirements as requirements_mod
+
+    parts: list[dict[str, Any]] = []
+    if ws.schematic_path.is_file():
+        try:
+            from kicad_harness.engine.schematic import Schematic as _S
+
+            parts += [{"ref": p.reference, "value": p.value, "footprint": p.footprint}
+                      for p in _S.load(ws.schematic_path).placements()]
+        except Exception:
+            pass
+    if ws.board_path.is_file():
+        try:
+            data = ws.board_path.read_bytes()
+            h, _ = svc.artifacts.materialize(data)
+            parts += [{"ref": f.get("ref", ""), "value": f.get("value", ""),
+                       "footprint": f.get("footprint", "")}
+                      for f in svc.artifacts.index(h).get("footprints", [])]
+        except Exception:
+            pass
+
+    # Countable demands in the brief ("16 relays") — leaving them out is a failure, not silence.
+    wanted = []
+    try:
+        wanted = ws.requirements()
+    except Exception:
+        wanted = []
+    requirement_gaps = requirements_mod.gaps(wanted, parts) if wanted else []
+
     parity = part_refs(sch, brd)
     if not sch:
         # A design imported from a .kicad_pcb has no schematic at all; that is not a parity
         # failure, so nothing is reported as missing.
         parity["missing_from_schematic"] = []
-    return {"schematic_refs": sorted(sch), "board_refs": sorted(brd), **parity}
+    return {
+        "schematic_refs": sorted(sch),
+        "board_refs": sorted(brd),
+        "requirements": wanted,
+        "requirement_gaps": requirement_gaps,
+        **parity,
+    }
 
 
 class AuditGap(BaseModel):

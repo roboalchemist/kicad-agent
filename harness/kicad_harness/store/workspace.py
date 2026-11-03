@@ -495,7 +495,14 @@ class Workspace:
             _git(staging, "init", "-q", "-b", DEFAULT_BRANCH, "--template=", str(staging), repo=False)
             (staging / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
             (staging / SCHEMATIC_FILE).write_text(empty_schematic(), encoding="utf-8")
-            project = dict(DEFAULT_PROJECT, phase=PHASE_SCHEMATIC, brief=brief.strip())
+            from ..agent import requirements as requirements_mod
+
+            project = dict(
+                DEFAULT_PROJECT,
+                phase=PHASE_SCHEMATIC,
+                brief=brief.strip(),
+                requirements=requirements_mod.derive(brief),
+            )
             (staging / PROJECT_FILE).write_text(_dump_goal(project), encoding="utf-8")
             goal_obj = DEFAULT_SCHEMATIC_GOAL if goal is None else dict(goal)
             # The brief is the intent; keep it in the goal so the agent always sees it.
@@ -580,6 +587,16 @@ class Workspace:
         project["phase"] = phase
         with self.lock:
             (self.path / PROJECT_FILE).write_text(_dump_goal(project), encoding="utf-8")
+
+    def requirements(self) -> list[dict[str, Any]]:
+        """Countable demands from the brief, stored at creation (derived if absent)."""
+        from ..agent import requirements as requirements_mod
+
+        stored = self.project().get("requirements")
+        if isinstance(stored, list) and stored:
+            return stored
+        brief = self.brief()
+        return requirements_mod.derive(brief) if brief else []
 
     def brief(self) -> str | None:
         """The prompt the design was created from, if any."""

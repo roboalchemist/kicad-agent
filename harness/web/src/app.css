@@ -1573,7 +1573,17 @@ button.stop-btn {
   padding-bottom: 12px;
 }
 .section-hint { margin-left: auto; font-size: 12px; }
-.section-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.section-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* The viewers size themselves from this box, so it must be a real flex column with a definite
+     height — scrolling here instead gave them height:0 and an empty board. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.section-body > * { flex: 1 1 auto; min-height: 0; }
+
 .section-empty { padding: 28px; text-align: center; font-size: 13px; }
 
 /* BOM */
