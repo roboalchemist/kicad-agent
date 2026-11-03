@@ -190,11 +190,16 @@ def evaluate_criterion(
                               detail=f"{c['ref']} spans ({bx:.2f}, {by:.2f})-({bx + bw:.2f}, {by + bh:.2f}); "
                                      f"region ({x1}, {y1})-({x2}, {y2})")
         elif ctype in ("erc_errors", "erc_warnings"):
-            # ERC comes from the schematic; the caller passes it as drc= with an "erc" marker.
-            erc_counts = (drc or {}).get("erc_counts", {})
+            # ERC comes from the schematic. If the caller did not measure it, the criterion must
+            # fail rather than silently read 0 — otherwise an unmeasured check looks like a pass.
+            erc_counts = (drc or {}).get("erc_counts")
             key = "errors" if ctype == "erc_errors" else "warnings"
-            value = int(erc_counts.get(key, 0))
-            result.update(value=value, passed=value <= c["max"], detail=f"{value} ERC {key} (max {c['max']})")
+            if erc_counts is None:
+                result.update(value=None, passed=False, detail="ERC was not measured")
+            else:
+                value = int(erc_counts.get(key, 0))
+                result.update(value=value, passed=value <= c["max"],
+                              detail=f"{value} ERC {key} (max {c['max']})")
         elif ctype == "design_sync":
             gaps_ = list((drc or {}).get("sync_gaps") or [])
             allowed = int(c.get("max_gaps", 0))

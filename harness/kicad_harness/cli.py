@@ -316,7 +316,12 @@ def _eval_inputs(svc, ws, name):
     board_hash, _ = svc.artifacts.materialize(ws.board_path.read_bytes())
     drc = goals.with_board_state(svc.artifacts.drc(board_hash), True)
     from kicad_harness.agent.audit import design_parts
+    from kicad_harness.engine import kicad_cli as _kc
 
+    try:
+        drc = {**drc, "erc_counts": _kc.erc(ws.schematic_path, config=svc.config)["counts"]}
+    except Exception:
+        drc = {**drc, "erc_counts": None}
     parts = design_parts(svc, ws)
     drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
            "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],

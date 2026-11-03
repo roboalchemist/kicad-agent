@@ -685,6 +685,9 @@ def create_app() -> FastAPI:
             "phase": ws.phase(), "brief": ws.brief(),
             "has_board": ws.board_path.is_file(),
             "has_schematic": ws.schematic_path.is_file(),
+            "schematic_hash": await asyncio.to_thread(
+                lambda: __import__("hashlib").sha256(ws.schematic_path.read_bytes()).hexdigest()[:16]
+            ) if ws.schematic_path.is_file() else None,
             "board_hash": board_hash,
             "summary": {"drc": drc.get("counts", {}), "size": [round(w, 3), round(h, 3)],
                         "components": len(index.get("footprints", []))},
@@ -1232,7 +1235,13 @@ def create_app() -> FastAPI:
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
         drc = goals.with_board_state(drc, ws.board_path.is_file())
         from kicad_harness.agent.audit import design_parts
+        from kicad_harness.engine import kicad_cli as _kc
 
+        try:
+            erc_report = await asyncio.to_thread(_kc.erc, ws.schematic_path, config=svc.config)
+            drc = {**drc, "erc_counts": erc_report["counts"]}
+        except Exception:
+            drc = {**drc, "erc_counts": None}
         parts = await asyncio.to_thread(design_parts, svc, ws)
         drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
                "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],

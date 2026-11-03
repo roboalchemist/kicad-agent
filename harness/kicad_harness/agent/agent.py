@@ -208,6 +208,14 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
     board_hash, index = await _working(ctx)
     drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
     drc = goals.with_board_state(drc, ws.board_path.is_file())
+    # ERC is a property of the schematic in either phase; the board criteria do not measure it.
+    from kicad_harness.engine import kicad_cli as _kc
+
+    try:
+        erc_report = await asyncio.to_thread(_kc.erc, ws.schematic_path, config=svc.config)
+        drc = {**drc, "erc_counts": erc_report["counts"]}
+    except Exception:
+        drc = {**drc, "erc_counts": None}
     facts = await asyncio.to_thread(_parts_facts, ctx)
     drc = {
         **drc,

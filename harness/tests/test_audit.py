@@ -109,3 +109,17 @@ def test_reconcile_adds_missing_parts_without_rebuilding() -> None:
     src = inspect.getsource(seed.reconcile_board)
     assert "add_footprint" in src, "missing parts must be placed"
     assert "only_on_board" in src, "board-only parts must be reported, not silently dropped"
+
+
+def test_erc_criterion_fails_when_not_measured() -> None:
+    """An unmeasured ERC check must fail, not silently read 0."""
+    from kicad_harness.agent import goal as g
+
+    unmeasured = g.evaluate_criterion({"id": "erc", "type": "erc_errors", "max": 0}, {}, {}, [])
+    assert unmeasured["passed"] is False
+    assert "not measured" in unmeasured["detail"]
+
+    measured = g.evaluate_criterion(
+        {"id": "erc", "type": "erc_errors", "max": 0}, {}, {"erc_counts": {"errors": 235}}, []
+    )
+    assert measured["passed"] is False and measured["value"] == 235
