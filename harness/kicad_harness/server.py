@@ -110,6 +110,7 @@ def group_bom(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
                 "lcsc": key[2],
                 "description": row.get("description") or "",
                 "mpn": row.get("mpn") or "",
+                "url": row.get("url") or "",
                 "tier": row.get("tier"),
                 "stock": row.get("stock"),
                 "unit_price": row.get("unit_price"),
@@ -117,7 +118,7 @@ def group_bom(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
             }
         line["refs"].append(str(row.get("ref") or ""))
         # Keep supplier facts if a later row for the same part carried them.
-        for field in ("mpn", "tier", "stock", "unit_price"):
+        for field in ("mpn", "url", "tier", "stock", "unit_price"):
             if line.get(field) in (None, "") and row.get(field) not in (None, ""):
                 line[field] = row[field]
 
@@ -905,15 +906,30 @@ def create_app() -> FastAPI:
                         tier=hit["tier"],
                         stock=hit["stock"],
                         unit_price=hit["unit_price"],
+                        url=hit.get("url") or f"https://www.lcsc.com/product-detail/{lcsc}",
                     )
 
         lines, total_qty = group_bom(rows)
+        # Cost per line and for the board. Parts without a known unit price are counted in
+        # "unpriced" so a total is never silently wrong.
+        total_price = 0.0
+        unpriced = 0
+        for line in lines:
+            unit = line.get("unit_price")
+            if unit is None:
+                line["line_total"] = None
+                unpriced += line["qty"]
+            else:
+                line["line_total"] = round(float(unit) * line["qty"], 4)
+                total_price += line["line_total"]
         return {
             "phase": ws.phase(),
             "source": source,
             "lines": lines,
             "line_count": len(lines),
             "total_qty": total_qty,
+            "total_price": round(total_price, 2),
+            "unpriced_qty": unpriced,
         }
 
     # ------------------------------------------------------------------ versions

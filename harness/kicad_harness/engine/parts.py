@@ -88,8 +88,11 @@ def _price_breaks(raw: str | None) -> list[dict[str, Any]]:
 def _part_row(row: tuple) -> dict[str, Any]:
     lcsc, mfr, package, stock, basic, price, description, datasheet, joints, preferred = row
     breaks = _price_breaks(price)
+    digits = str(lcsc)
     return {
-        "lcsc": f"C{lcsc}",
+        "lcsc": f"C{digits}",
+        # Where to buy it: the LCSC product page is stable and needs no lookup.
+        "url": f"https://www.lcsc.com/product-detail/C{digits}",
         "mpn": mfr,
         "package": package,
         "stock": stock,

@@ -107,3 +107,42 @@ async def test_bom_of_an_empty_project_is_empty_not_an_error(services) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["lines"] == [] and body["total_qty"] == 0
+
+
+async def test_bom_has_part_number_link_price_and_total(services) -> None:
+    """The BOM must name the orderable part, link to it, price it, and total it."""
+    name = "bom-priced"
+    ws = Workspace.create_schematic(services.config, name, "two 10k resistors and a cap")
+    from kicad_harness.engine.schematic import Schematic, read_library
+
+    doc = Schematic.load(ws.schematic_path)
+    doc.libraries["Device"] = read_library("/usr/share/kicad/symbols/Device.kicad_sym")
+    for ref, value, fp, lcsc in (
+        ("R1", "10k", "Resistor_SMD:R_0805_2012Metric", "C17414"),
+        ("R2", "10k", "Resistor_SMD:R_0805_2012Metric", "C17414"),
+        ("C1", "100nF", "Capacitor_SMD:C_0805_2012Metric", "C49678"),
+    ):
+        doc.add_symbol("Device:R" if ref.startswith("R") else "Device:C", ref, 100.0, 100.0,
+                       value=value, footprint=fp)
+        doc.set_symbol_property(ref, "LCSC", lcsc)
+    doc.save()
+
+    async with _client(services) as client:
+        body = (await client.get(f"/api/designs/{name}/bom")).json()
+
+    # identical parts merge into one line carrying both refs
+    resistor = next(line for line in body["lines"] if line["value"] == "10k")
+    assert resistor["refs"] == ["R1", "R2"] and resistor["qty"] == 2
+
+    from kicad_harness.engine import parts
+
+    if not parts.available():
+        return
+    for line in body["lines"]:
+        assert line["mpn"], f"{line['lcsc']} has no part number"
+        assert line["url"].startswith("https://"), "each line needs a source link"
+        assert line["unit_price"] and line["line_total"]
+    assert body["total_price"] == round(sum(line["line_total"] for line in body["lines"]), 2)
+    assert body["total_price"] > 0
+    # the merged line is priced for two units, not one
+    assert resistor["line_total"] == round(resistor["unit_price"] * 2, 4)

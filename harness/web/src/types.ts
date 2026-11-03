@@ -51,6 +51,8 @@ export interface BomLine {
   value: string;
   footprint: string;
   lcsc: string;
+  url?: string;
+  line_total?: number | null;
   description?: string;
   mpn?: string;
   tier?: "basic" | "extended" | null;
@@ -64,6 +66,8 @@ export interface BomResponse {
   lines: BomLine[];
   line_count: number;
   total_qty: number;
+  total_price: number;
+  unpriced_qty: number;
 }
 
 /** Token accounting for a project's current thread (see /api/designs/{d}/usage). */

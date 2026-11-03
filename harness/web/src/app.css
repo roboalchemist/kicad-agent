@@ -1724,3 +1724,12 @@ div.tool-card > .tool-card-header { padding: 3px 8px; }
   scroll-behavior: auto !important;
   overscroll-behavior: contain;
 }
+
+/* BOM: keep every column visible in the panel without horizontal scrolling. */
+.bom-table th, .bom-table td { padding: 5px 7px; }
+.bom-lcsc-code { color: var(--muted); margin-left: 6px; font-size: 11px; }
+.bom-table a { color: var(--accent); text-decoration: none; }
+.bom-table a:hover { text-decoration: underline; }
+.bom-total-price { font-weight: 700; }
+.bom-note td { color: var(--muted); font-size: 11px; white-space: normal; }
+.bom-table tfoot td { border-top: 2px solid var(--border-strong); background: var(--surface-2); font-weight: 600; }

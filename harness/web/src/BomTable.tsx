@@ -69,10 +69,11 @@ export function BomTable({ design }: { design: string }) {
                 <th>Qty</th>
                 <th>Value</th>
                 <th>Footprint</th>
-                {hasSupplier && <th>LCSC</th>}
+                {hasSupplier && <th>Part number</th>}
                 {hasSupplier && <th>Tier</th>}
                 {hasSupplier && <th>Stock</th>}
                 {hasSupplier && <th>Unit</th>}
+                {hasSupplier && <th>Line</th>}
               </tr>
             </thead>
             <tbody>
@@ -82,7 +83,18 @@ export function BomTable({ design }: { design: string }) {
                   <td>{line.qty}</td>
                   <td>{line.value || "—"}</td>
                   <td title={line.footprint}>{shortFootprint(line.footprint)}</td>
-                  {hasSupplier && <td className="bom-lcsc">{line.lcsc || "—"}</td>}
+                  {hasSupplier && (
+                    <td className="bom-lcsc">
+                      {line.lcsc ? (
+                        <a href={line.url || undefined} target="_blank" rel="noreferrer" title={line.mpn || line.lcsc}>
+                          {line.mpn || line.lcsc}
+                          {line.mpn && <span className="bom-lcsc-code">{line.lcsc}</span>}
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  )}
                   {hasSupplier && (
                     <td>
                       {line.tier ? (
@@ -96,9 +108,29 @@ export function BomTable({ design }: { design: string }) {
                   )}
                   {hasSupplier && <td>{line.stock ? line.stock.toLocaleString() : "—"}</td>}
                   {hasSupplier && <td>{money(line.unit_price)}</td>}
+                  {hasSupplier && <td>{money(line.line_total)}</td>}
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr data-testid="bom-total">
+                <td className="bom-refs">Total</td>
+                <td>{bom.total_qty}</td>
+                <td colSpan={hasSupplier ? 2 : 1} />
+                {hasSupplier && <td />}
+                {hasSupplier && <td />}
+                {hasSupplier && <td />}
+                {hasSupplier && <td className="bom-total-price">{money(bom.total_price)}</td>}
+              </tr>
+              {hasSupplier && bom.unpriced_qty > 0 && (
+                <tr className="bom-note">
+                  <td colSpan={8}>
+                    {bom.unpriced_qty} part{bom.unpriced_qty === 1 ? "" : "s"} have no known price and are
+                    not included in the total.
+                  </td>
+                </tr>
+              )}
+            </tfoot>
           </table>
         </div>
       )}
