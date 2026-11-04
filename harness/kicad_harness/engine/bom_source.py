@@ -605,12 +605,17 @@ def _measured_limit(value: str, budget: dict[str, Any] | None) -> str:
             "and a 10 nF boot capacitor"
         ).format(stress=budget["load_stress_a"], max=budget["load_max_a"], rail=budget["rail"],
                  coils=budget["relay_coils"], coil=budget["coil_current_ma"])
-    if key in ("100UF/35V", "470UF/10V"):
+    if key in ("100UF/35V", "10UF"):
         return (
-            "the LM2596 datasheet calls for C_IN {cin:.0f} uF and C_OUT {cout:.0f} uF; the basic "
-            "MLCC options are 22 uF/25 V, 47 uF/10 V and 100 uF/6.3 V — below the recommended "
-            "capacitance, and 6.3 V leaves 1.3x margin on a 5 V rail"
-        ).format(cin=LM2596_CIN_UF, cout=LM2596_COUT_UF)
+            "the TPS5430 datasheet asks for a 10 uF ceramic input decoupling capacitor, which the "
+            "basic 10 uF/50 V 1206 (C13585) now provides at 2.5x the 20 V rail"
+        )
+    if key in ("470UF/10V",):
+        return (
+            "the TPS5430 datasheet sizes C_OUT at 220 uF for its 15 uH design, and this board runs "
+            "33 uH, so the LC product needs at least as much; the largest basic MLCC is 100 uF/6.3 V "
+            "(C15008) - 2.2x short and only 1.26x the 5 V rail"
+        )
     if key.startswith("ULN2803"):
         return (
             "the basic ULN2003ADR has 7 channels, so 16 relays need three SOIC-16 parts instead of "

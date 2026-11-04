@@ -363,8 +363,11 @@ def test_measured_limits_state_numbers_not_estimates() -> None:
     assert "2 A" in regulator and "2.07 A" in regulator and "2.61 A" in regulator
     assert regulator == bom_source._measured_limit("LM2596S-5.0", budget)
 
+    # the capacitor limits must cite the regulator actually in the design (TPS5430, not LM2596)
     caps = bom_source._measured_limit("470uF/10V", budget)
-    assert "C_IN 470 uF" in caps and "C_OUT 220 uF" in caps
+    assert "TPS5430" in caps and "220 uF" in caps and "100 uF/6.3 V" in caps
+    small = bom_source._measured_limit("10uF", budget)
+    assert "10 uF ceramic" in small and "C13585" in small
 
     # a part with no measured constraint must not acquire one
     assert bom_source._measured_limit("G5LE-14 5VDC", budget) == ""
