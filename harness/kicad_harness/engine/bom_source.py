@@ -601,7 +601,8 @@ def _measured_limit(value: str, budget: dict[str, Any] | None) -> str:
         return (
             "the basic XL1509-5.0E1 is rated 2 A against a measured {stress:.2f} A stress / "
             "{max:.2f} A worst case on {rail} ({coils} relay coils at {coil:.1f} mA plus a Pi 3); "
-            "the basic 3 A TPS5430DDAR is adjustable and would need a feedback divider"
+            "the basic 3 A TPS5430DDAR does fit, with a feedback divider (12k/3.9k gives 4.98 V) "
+            "and a 10 nF boot capacitor"
         ).format(stress=budget["load_stress_a"], max=budget["load_max_a"], rail=budget["rail"],
                  coils=budget["relay_coils"], coil=budget["coil_current_ma"])
     if key in ("100UF/35V", "470UF/10V"):
