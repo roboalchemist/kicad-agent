@@ -331,3 +331,41 @@ async def test_resolve_leaves_an_extended_part_alone_when_no_basic_equivalent_ex
     assert report["switched_lines"] == 0 and report["resolved_lines"] == 0, report
     fuse = next(line for line in body["lines"] if line["value"] == "2A")
     assert fuse["lcsc"] == "C3105" and fuse["tier"] == "extended"
+
+
+def test_power_budget_counts_the_rail_from_the_schematic() -> None:
+    """The rail load comes from the schematic's own connectivity, not from a guess."""
+    from types import SimpleNamespace
+
+    from kicad_harness.engine import bom_source
+
+    placements = [SimpleNamespace(reference=f"K{i}", value="G5LE-14 5VDC") for i in range(1, 17)]
+    placements.append(SimpleNamespace(reference="J30", value="RPi3 40-pin bottom mount"))
+    doc = SimpleNamespace(
+        placements=lambda: placements,
+        nets=lambda: {"+5V": [{"ref": p.reference} for p in placements]},
+    )
+    budget = bom_source.power_budget(doc)
+    assert budget["relay_coils"] == 16
+    assert budget["coil_current_ma"] == 79.4
+    assert budget["coil_load_a"] == 1.27
+    assert budget["pi3_on_rail"] is True
+    assert budget["load_stress_a"] == 2.07 and budget["load_max_a"] == 2.61
+
+
+def test_measured_limits_state_numbers_not_estimates() -> None:
+    """A rejected swap must name the measured load and the datasheet limit that rules it out."""
+    from kicad_harness.engine import bom_source
+
+    budget = {"rail": "+5V", "relay_coils": 16, "coil_current_ma": 79.4, "coil_load_a": 1.27,
+              "pi3_stress_a": 0.8, "pi3_max_a": 1.34, "load_stress_a": 2.07, "load_max_a": 2.61}
+    regulator = bom_source._measured_limit("LM2596S-5.0", budget)
+    assert "2 A" in regulator and "2.07 A" in regulator and "2.61 A" in regulator
+    assert regulator == bom_source._measured_limit("LM2596S-5.0", budget)
+
+    caps = bom_source._measured_limit("470uF/10V", budget)
+    assert "C_IN 470 uF" in caps and "C_OUT 220 uF" in caps
+
+    # a part with no measured constraint must not acquire one
+    assert bom_source._measured_limit("G5LE-14 5VDC", budget) == ""
+    assert bom_source._measured_limit("LM2596S-5.0", None) == ""

@@ -156,6 +156,7 @@ def _unit_price(raw: str | None) -> float | None:
     return breaks[0].get("price") if breaks else None
 
 
+@lru_cache(maxsize=512)
 def resolve(value: str, footprint: str = "", *, basic_only: bool = False) -> Match | None:
     """Find the catalogue part a BOM line names, or ``None`` when it cannot be determined.
 
@@ -213,6 +214,7 @@ def resolve(value: str, footprint: str = "", *, basic_only: bool = False) -> Mat
     return best
 
 
+@lru_cache(maxsize=512)
 def _match_line(value: str, footprint: str, *, basic_only: bool = False) -> Match | None:
     """The catalogue part for one BOM line, trying value, then connector geometry, then fuse."""
     return (
@@ -376,6 +378,7 @@ def basic_report(ws: Any) -> dict[str, Any]:
     from .schematic import Schematic
 
     doc = Schematic.load(ws.schematic_path)
+    budget = power_budget(doc)
     lines: list[dict[str, Any]] = []
     for (value, footprint), refs in sorted(_line_groups(doc).items()):
         lcsc = _current_lcsc(doc, refs)
@@ -394,6 +397,7 @@ def basic_report(ws: Any) -> dict[str, Any]:
             "basic": tier == "basic",
             "basic_alternative": None,
             "reason": "",
+            "limit": "",
         }
         if tier != "basic":
             alternative = _match_line(value, footprint, basic_only=True)
@@ -401,6 +405,7 @@ def basic_report(ws: Any) -> dict[str, Any]:
                 item["basic_alternative"] = alternative.to_dict()
             else:
                 item["reason"] = _why_no_basic(value, footprint, current)
+                item["limit"] = _measured_limit(value, budget)
         lines.append(item)
 
     basic = [l for l in lines if l["basic"]]
@@ -412,10 +417,11 @@ def basic_report(ws: Any) -> dict[str, Any]:
         "extended_lines": len(extended),
         "basic_units": sum(l["qty"] for l in basic),
         "total_units": sum(l["qty"] for l in lines),
+        "power": budget,
         "replaceable": [l for l in lines if l["basic_alternative"]],
         "extended_parts": [
             {"value": l["value"], "lcsc": l["lcsc"], "mpn": l["mpn"], "category": l["category"],
-             "reason": l["reason"]}
+             "reason": l["reason"], "limit": l["limit"]}
             for l in extended
         ],
     }
@@ -467,6 +473,7 @@ def _gender_ok(footprint: str, category: str) -> bool:
     return True
 
 
+@lru_cache(maxsize=512)
 def resolve_connector(footprint: str, *, basic_only: bool = False) -> Match | None:
     """Match a connector by its footprint: pitch, row count and positions per row.
 
@@ -514,6 +521,7 @@ def resolve_connector(footprint: str, *, basic_only: bool = False) -> Match | No
     return best
 
 
+@lru_cache(maxsize=128)
 def resolve_fuse(value: str, footprint: str, *, basic_only: bool = False) -> Match | None:
     """A fuse rating ("2A") matched by current in the package the footprint names."""
     amount = parse_value(value)
@@ -536,3 +544,76 @@ def resolve_fuse(value: str, footprint: str, *, basic_only: bool = False) -> Mat
                 return Match(f"C{lcsc}", mfr, pkg, bool(basic), stock, _unit_price(price),
                              f"fuse {value} in {package or 'any package'}")
     return None
+
+
+# --------------------------------------------------------------------------------------
+# Measured constraints behind "no basic part fits"
+#
+# A swap is only rejected on numbers: the rail load measured from the schematic, compared with
+# the datasheet limit of the part that would replace it. Guessed figures are not evidence.
+COIL_RESISTANCE_OHM = 63.0     # Omron G5LE-14 5VDC coil resistance (G5LE datasheet)
+PI3_STRESS_A = 0.8             # Raspberry Pi 3 Model B, 5 V: 0.5-0.8 A under stress
+PI3_MAX_A = 1.34               # and 1.34 A maximum (Raspberry Pi published measurements)
+LM2596_CIN_UF = 470.0          # TI LM2596 fixed-5 V application: C_IN 470-680 uF
+LM2596_COUT_UF = 220.0         # ... and C_OUT 220 uF
+
+
+def power_budget(doc: Any, rail: str = "+5V") -> dict[str, Any]:
+    """The ``rail`` load, measured from the schematic rather than assumed.
+
+    Every part that hangs on the rail is counted and attributed: relay coils at their datasheet
+    current, and a Raspberry Pi 3 sitting on the 40-pin header at its published draw. Comparing
+    that total with a candidate regulator's rating is what decides whether a swap is legitimate.
+    """
+    nets = doc.nets()
+    on_rail = {m["ref"] for m in nets.get(rail, [])}
+    relays = [
+        p for p in doc.placements()
+        if p.reference in on_rail and p.value.strip().upper().startswith("G5LE")
+    ]
+    coil_a = 5.0 / COIL_RESISTANCE_OHM
+    coil_load = len(relays) * coil_a
+    pi = any(
+        p.reference.startswith("J") and p.reference in on_rail and "40-pin" in p.value.lower()
+        for p in doc.placements()
+    )
+    pi_typ = PI3_STRESS_A if pi else 0.0
+    pi_max = PI3_MAX_A if pi else 0.0
+    return {
+        "rail": rail,
+        "relay_coils": len(relays),
+        "coil_current_ma": round(coil_a * 1000, 1),
+        "coil_load_a": round(coil_load, 3),
+        "pi3_on_rail": pi,
+        "pi3_stress_a": pi_typ,
+        "pi3_max_a": pi_max,
+        "load_stress_a": round(coil_load + pi_typ, 3),
+        "load_max_a": round(coil_load + pi_max, 3),
+    }
+
+
+def _measured_limit(value: str, budget: dict[str, Any] | None) -> str:
+    """The numbers that rule a basic replacement out for a part, or ``""`` when none apply."""
+    if not budget:
+        return ""
+    key = (value or "").strip().upper()
+    if key.startswith("LM2596"):
+        return (
+            "the basic XL1509-5.0E1 is rated 2 A against a measured {stress:.2f} A stress / "
+            "{max:.2f} A worst case on {rail} ({coils} relay coils at {coil:.1f} mA plus a Pi 3); "
+            "the basic 3 A TPS5430DDAR is adjustable and would need a feedback divider"
+        ).format(stress=budget["load_stress_a"], max=budget["load_max_a"], rail=budget["rail"],
+                 coils=budget["relay_coils"], coil=budget["coil_current_ma"])
+    if key in ("100UF/35V", "470UF/10V"):
+        return (
+            "the LM2596 datasheet calls for C_IN {cin:.0f} uF and C_OUT {cout:.0f} uF; the basic "
+            "MLCC options are 22 uF/25 V, 47 uF/10 V and 100 uF/6.3 V — below the recommended "
+            "capacitance, and 6.3 V leaves 1.3x margin on a 5 V rail"
+        ).format(cin=LM2596_CIN_UF, cout=LM2596_COUT_UF)
+    if key.startswith("ULN2803"):
+        return (
+            "the basic ULN2003ADR has 7 channels, so 16 relays need three SOIC-16 parts instead of "
+            "two DIP-18: 79 mA per coil against a 500 mA rating makes it electrically fine, but it "
+            "is a board re-layout, not a re-source"
+        )
+    return ""

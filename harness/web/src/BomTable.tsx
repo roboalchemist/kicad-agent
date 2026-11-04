@@ -23,7 +23,10 @@ function shortFootprint(footprint: string): string {
 
 /** Distinct extended parts with the reason each has no basic replacement. */
 function extendedReasons(report: BomBasicReport) {
-  const byCode = new Map<string, { value: string; lcsc: string; category: string; reason: string; qty: number }>();
+  const byCode = new Map<
+    string,
+    { value: string; lcsc: string; category: string; reason: string; limit: string; qty: number }
+  >();
   for (const line of report.lines) {
     if (line.basic) continue;
     const key = line.lcsc || `${line.value}|${line.footprint}`;
@@ -37,6 +40,7 @@ function extendedReasons(report: BomBasicReport) {
       lcsc: line.lcsc,
       category: line.category,
       reason: line.reason,
+      limit: line.limit ?? "",
       qty: line.qty,
     });
   }
@@ -51,16 +55,16 @@ export function BomTable({ design }: { design: string }) {
   useEffect(() => {
     let live = true;
     setError(null);
-    Promise.all([
-      api.bom(design),
-      api.bomBasic(design).catch(() => null), // the audit is a bonus, never a reason to fail
-    ])
-      .then(([table, audit]) => {
-        if (!live) return;
-        setBom(table);
-        setBasic(audit);
-      })
+    api
+      .bom(design)
+      .then((table) => live && setBom(table))
       .catch((e) => live && setError(String(e instanceof Error ? e.message : e)));
+    // The audit scans the parts database per line, so it loads after the table rather than
+    // holding the BOM hostage; until it arrives the table simply has no coverage badge.
+    api
+      .bomBasic(design)
+      .then((audit) => live && setBasic(audit))
+      .catch(() => undefined);
     return () => {
       live = false;
     };
@@ -184,6 +188,13 @@ export function BomTable({ design }: { design: string }) {
         <details className="bom-basic" data-testid="bom-basic">
           <summary>
             {extended.length} part{extended.length === 1 ? "" : "s"} can't be basic — why
+            {basic.power && (
+              <span className="bom-basic-rail">
+                {" "}
+                · {basic.power.rail} load measured at {basic.power.load_stress_a.toFixed(2)} A stress /{" "}
+                {basic.power.load_max_a.toFixed(2)} A worst case
+              </span>
+            )}
           </summary>
           <ul>
             {extended.map((part) => (
@@ -192,6 +203,7 @@ export function BomTable({ design }: { design: string }) {
                 {part.lcsc && <span className="bom-lcsc-code">{part.lcsc}</span>}
                 {" — "}
                 {part.reason}
+                {part.limit && <div className="bom-basic-limit">{part.limit}</div>}
               </li>
             ))}
           </ul>

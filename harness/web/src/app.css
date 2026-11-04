@@ -1754,3 +1754,6 @@ div.tool-card > .tool-card-header { padding: 3px 8px; }
 .bom-basic ul { margin: 6px 0 0 14px; padding: 0; }
 .bom-basic li { margin-bottom: 3px; line-height: 1.35; }
 .bom-basic-value { color: var(--fg); font-weight: 600; }
+
+.bom-basic-limit { color: var(--muted); font-size: 11px; opacity: 0.85; margin: 2px 0 4px 0; }
+.bom-basic-rail { font-variant-numeric: tabular-nums; }

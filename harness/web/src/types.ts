@@ -94,6 +94,20 @@ export interface BomBasicLine {
   basic: boolean;
   basic_alternative: BomLine | null;
   reason: string;
+  limit?: string;
+}
+
+/** The measured load behind the audit's rejections. */
+export interface BomPowerBudget {
+  rail: string;
+  relay_coils: number;
+  coil_current_ma: number;
+  coil_load_a: number;
+  pi3_on_rail: boolean;
+  pi3_stress_a: number;
+  pi3_max_a: number;
+  load_stress_a: number;
+  load_max_a: number;
 }
 
 export interface BomBasicReport {
@@ -104,7 +118,15 @@ export interface BomBasicReport {
   basic_units: number;
   total_units: number;
   replaceable: BomBasicLine[];
-  extended_parts: { value: string; lcsc: string; mpn: string; category: string; reason: string }[];
+  power?: BomPowerBudget;
+  extended_parts: {
+    value: string;
+    lcsc: string;
+    mpn: string;
+    category: string;
+    reason: string;
+    limit?: string;
+  }[];
 }
 
 /** Token accounting for a project's current thread (see /api/designs/{d}/usage). */
