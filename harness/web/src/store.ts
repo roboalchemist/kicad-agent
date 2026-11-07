@@ -48,14 +48,28 @@ export const BOARD_LAYERS: Record<"front" | "back", BoardLayer[]> = {
 
 /** The layer panel's groups: every layer of *both* sides, with the shared board outline once.
  *
- * KiCad lists all layers in one panel whatever side is being looked at, so a layer can be hidden
- * before switching to it; the current side's group is marked so it is clear which one the view
- * is showing.
+ * KiCad lists all layers in one panel and draws them all at once, so every row is meaningful
+ * whatever way the board is flipped; the viewing side's group is marked as the near one.
  */
 export const LAYER_PANEL_GROUPS: { title: string; side: "front" | "back" | null; layers: BoardLayer[] }[] = [
   { title: "Front", side: "front", layers: BOARD_LAYERS.front.filter((l) => l.id !== "Edge.Cuts") },
   { title: "Back", side: "back", layers: BOARD_LAYERS.back.filter((l) => l.id !== "Edge.Cuts") },
   { title: "Board", side: null, layers: BOARD_LAYERS.front.filter((l) => l.id === "Edge.Cuts") },
+];
+
+/** Every plotted layer, bottom to top, as KiCad stacks them in one composite view.
+ *
+ * Back layers are plotted unmirrored (at board coordinates), so the whole board lines up: the
+ * front view sees through to the back through any gaps, and flipping mirrors the finished stack.
+ */
+export const BOARD_STACK: { id: string; side: "front" | "back" }[] = [
+  { id: "B.Cu", side: "back" },
+  { id: "B.Mask", side: "back" },
+  { id: "B.SilkS", side: "back" },
+  { id: "F.Cu", side: "front" },
+  { id: "F.Mask", side: "front" },
+  { id: "F.SilkS", side: "front" },
+  { id: "Edge.Cuts", side: "front" },
 ];
 
 
@@ -271,18 +285,19 @@ export async function loadSvg() {
   // A schematic-phase design has no board to plot; the schematic viewer loads its own sheet.
   if (design?.phase === "schematic") return;
   await catchErr(async () => {
-    const layers = BOARD_LAYERS[side];
     const bust = svgKey ? `${svgKey}-${design?.board_hash ?? ""}` : design?.board_hash;
+    // Both sides are fetched every time and stacked in the viewer, so switching the viewed side
+    // is a pure flip and never a reload of different artwork.
     const results = await Promise.allSettled(
-      layers.map((layer) => api.svg(name, rev, side, bust, [layer.id])),
+      BOARD_STACK.map((layer) => api.svg(name, rev, layer.side, bust, [layer.id], false)),
     );
     const layerSvgs: Record<string, string> = {};
     results.forEach((result, i) => {
-      if (result.status === "fulfilled") layerSvgs[layers[i].id] = result.value;
+      if (result.status === "fulfilled") layerSvgs[BOARD_STACK[i].id] = result.value;
     });
     if (!Object.keys(layerSvgs).length) throw new Error("no board layer could be plotted");
     setStore({
-      // Edge.Cuts carries the page/viewBox every side shares, so it is the dimension reference.
+      // Edge.Cuts carries the page/viewBox every layer shares, so it is the dimension reference.
       svg: layerSvgs["Edge.Cuts"] ?? Object.values(layerSvgs)[0],
       layerSvgs,
       svgSide: side,

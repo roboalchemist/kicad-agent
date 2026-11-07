@@ -1159,11 +1159,14 @@ def create_app() -> FastAPI:
         return {**index, "board_hash": board_hash}
 
     @app.get("/api/designs/{design}/rev/{rev}/svg/{side}")
-    async def rev_svg(request: Request, design: str, rev: str, side: str, layers: str | None = None):
+    async def rev_svg(request: Request, design: str, rev: str, side: str, layers: str | None = None,
+                      mirror: bool | None = None):
         """One side of the board as SVG, optionally plotting only ``layers`` (comma-separated).
 
         The viewer asks for each layer on its own so its layer panel can show and hide them
-        without another render; without ``layers`` the side's full stack is returned.
+        without another render; without ``layers`` the side's full stack is returned. ``mirror``
+        defaults to True for the back side (a print-style back plot); the composite view asks for
+        ``mirror=false`` so back layers stay at board coordinates and line up with the front.
         """
         if side not in ("front", "back"):
             raise HTTPException(400, "side must be front or back")
@@ -1182,7 +1185,7 @@ def create_app() -> FastAPI:
         svc = _svc(request)
         board_hash = await _rev_hash(svc, _workspace(svc, design), rev)
         try:
-            svg = await asyncio.to_thread(svc.artifacts.svg, board_hash, side, chosen)
+            svg = await asyncio.to_thread(svc.artifacts.svg, board_hash, side, chosen, mirror)
         except Exception as exc:  # invalid layer names surface as a 400, not a 500
             from kicad_harness.engine.client import EngineError
 

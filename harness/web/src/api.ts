@@ -90,10 +90,12 @@ export const api = {
     side: "front" | "back",
     cacheBust?: string | null,
     layers?: string[] | null,
+    mirror?: boolean | null,
   ): Promise<string> => {
     const params = new URLSearchParams();
     if (cacheBust) params.set("v", cacheBust);
     if (layers && layers.length) params.set("layers", layers.join(","));
+    if (mirror !== undefined && mirror !== null) params.set("mirror", mirror ? "1" : "0");
     const q = params.size ? `?${params.toString()}` : "";
     const res = await fetch(`/api/designs/${d}/rev/${rev}/svg/${side}${q}`);
     if (!res.ok) throw new Error(`svg: ${res.status}`);

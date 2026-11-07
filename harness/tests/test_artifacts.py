@@ -108,6 +108,21 @@ def test_svg_can_be_plotted_one_layer_at_a_time(arts, counted):
         arts.svg(h, "front", [])
 
 
+def test_back_layers_can_be_plotted_at_board_coordinates(arts):
+    """The composite board view draws both sides at once; back art must not be mirrored there.
+
+    A back layer is mirrored by default (that is what you want for a print you flip over), but
+    the composite view needs it in board coordinates so it registers with the front layers.
+    """
+    h, _ = arts.materialize(FIXTURE.read_bytes())
+    mirrored = arts.svg(h, "back", ["B.Cu"])
+    aligned = arts.svg(h, "back", ["B.Cu"], mirror=False)
+    assert mirrored != aligned, "mirror=False must produce different artwork"
+    assert arts.svg(h, "back", ["B.Cu"], mirror=False) == aligned, "cached per (subset, mirroring)"
+    # The two are different plots of the same layer, so the unmirrored one is cached separately.
+    assert arts.svg(h, "back", ["B.Cu"]) == mirrored
+
+
 def test_concurrent_builds_happen_once(arts):
     h, _ = arts.materialize(FIXTURE.read_bytes())
     barrier = threading.Barrier(4)

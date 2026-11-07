@@ -126,12 +126,17 @@ class Artifacts:
                              lambda tmp: self._write_json(tmp, self.engine.index(board)))
         return json.loads(target.read_text(encoding="utf-8"))
 
-    def svg_path(self, hash: str, side: str, layers: Sequence[str] | None = None) -> Path:
-        """Path of the front or back SVG (back is mirrored), building it if needed.
+    def svg_path(self, hash: str, side: str, layers: Sequence[str] | None = None,
+                 mirror: bool | None = None) -> Path:
+        """Path of the front or back SVG, building it if needed.
 
         ``layers`` plots only those layers; the default is every layer of the side. Each subset
         is cached under a bitmask of the side's layer order, so the layer panel can ask for one
         layer at a time and the browser assembles the stack from cached files.
+
+        ``mirror`` defaults to the usual print behaviour (a back plot is mirrored). Passing
+        ``mirror=False`` for a back layer plots it at board coordinates instead, which is what
+        the composite board view needs: every layer then lines up in one coordinate system.
         """
         if side not in LAYERS:
             raise EngineError("InvalidParams", f"side must be 'front' or 'back', got {side!r}")
@@ -145,10 +150,13 @@ class Artifacts:
         chosen = [layer for layer in order if layer in (layers if layers is not None else order)]
         if not chosen:
             raise EngineError("InvalidParams", f"no {side} layers to plot")
+        mirrored = (side == "back") if mirror is None else mirror
         name = side if chosen == order else f"{side}-{sum(1 << order.index(l) for l in chosen)}"
+        if mirrored != (side == "back"):
+            name += "-mirrored" if mirrored else "-unmirrored"
         board = self.board_path(hash)
         return self._build(f"{hash}/svg-{name}", board.parent / f"{name}.svg",
-                           lambda tmp: kicad_cli.export_svg(board, chosen, tmp, mirror=side == "back",
+                           lambda tmp: kicad_cli.export_svg(board, chosen, tmp, mirror=mirrored,
                                                             config=self.config))
 
     def glb_path(self, hash: str) -> Path:
@@ -157,9 +165,10 @@ class Artifacts:
         return self._build(f"{hash}/glb", board.parent / "board.glb",
                            lambda tmp: kicad_cli.export_glb(board, tmp, config=self.config))
 
-    def svg(self, hash: str, side: str, layers: Sequence[str] | None = None) -> str:
-        """SVG text of the front or back of the board, optionally of one layer subset."""
-        return self.svg_path(hash, side, layers).read_text(encoding="utf-8")
+    def svg(self, hash: str, side: str, layers: Sequence[str] | None = None,
+            mirror: bool | None = None) -> str:
+        """SVG text of a board side, optionally of one layer subset and mirroring."""
+        return self.svg_path(hash, side, layers, mirror).read_text(encoding="utf-8")
 
     def drc(self, hash: str) -> dict[str, Any]:
         """Normalized DRC report."""

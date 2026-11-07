@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api.ts";
 import {
-  BOARD_LAYERS,
+  BOARD_STACK,
   LAYER_PANEL_GROUPS,
   boardToSvg,
   fitView,
@@ -89,12 +89,11 @@ function highlightedUuids(index: NonNullable<ReturnType<typeof getStore>["index"
 export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => void }) {
   const h = useHarness();
   const { index, svg, svgSide, side, rev, design, threads, diff, mode, selection, measure, measureA, measureB, highlight, view } = h;
-  const sideLayers = BOARD_LAYERS[side === "back" ? "back" : "front"];
-  // Layers the user has hidden in the right-hand panel; hidden layers are not painted and their
-  // entities are not clickable, so the viewer stays consistent with what it shows.
+  // Every layer of both sides is drawn at once; the panel only decides which ones are painted.
+  // Hidden layers are also not clickable, so the viewer stays consistent with what it shows.
   const visibleLayerSet = useMemo(
-    () => new Set(sideLayers.filter((layer) => !h.hiddenLayers.includes(layer.id)).map((layer) => layer.id)),
-    [sideLayers, h.hiddenLayers],
+    () => new Set(BOARD_STACK.filter((layer) => !h.hiddenLayers.includes(layer.id)).map((layer) => layer.id)),
+    [h.hiddenLayers],
   );
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -143,9 +142,18 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
   }, [h.focus?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // One parsed SVG per layer, bottom to top; the panel hides a layer by dropping it from here.
+  // The side facing the viewer is drawn last (nearest); each side keeps its own Cu→Mask→SilkS
+  // order, and Edge.Cuts is always on top.
+  const stack = useMemo(() => {
+    const edge = BOARD_STACK.filter((layer) => layer.id === "Edge.Cuts");
+    const back = BOARD_STACK.filter((layer) => layer.id.startsWith("B."));
+    const front = BOARD_STACK.filter((layer) => layer.id.startsWith("F."));
+    return side === "back" ? [...front, ...back, ...edge] : [...back, ...front, ...edge];
+  }, [side]);
+
   const layerGeoms = useMemo(() => {
     const key = `${rev}-${svgSide}-${h.svgKey}-${design?.board_hash ?? ""}`;
-    const layers = sideLayers.flatMap((layer) => {
+    const layers = stack.flatMap((layer) => {
       const text = h.layerSvgs[layer.id];
       const dims = svgDimsOf(text ?? null);
       if (!text || !dims) return [];
@@ -153,12 +161,12 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
       return geom ? [{ id: layer.id, geom }] : [];
     });
     if (layers.length || !svg) return layers;
-    // Before the per-layer stack for this side arrives (or if a layer fails to plot), fall back
-    // to the single combined SVG the store last loaded, so the board never blinks away.
+    // Before the composite stack arrives (or if a layer fails to plot), fall back to the single
+    // combined SVG the store last loaded, so the board never blinks away.
     const dims = svgDimsOf(svg);
     const geom = dims ? parseSvg(svg, dims.w, dims.h, `${key}-all`) : null;
     return geom ? [{ id: "all", geom }] : [];
-  }, [sideLayers, h.layerSvgs, svg, rev, svgSide, h.svgKey, design?.board_hash]);
+  }, [stack, h.layerSvgs, svg, rev, svgSide, h.svgKey, design?.board_hash]);
 
   const toSvg = useCallback(
     (x: number, y: number): [number, number] => {
@@ -171,12 +179,9 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
 
   const hitShapes = useMemo(() => {
     if (!index) return [];
-    const current = side === "back" ? "back" : "front";
-    return buildHitShapes(index, toSvg, visibleLayerSet).filter((s) => {
-      const sSide = sideEntitySide(index, s.uuid);
-      return sSide === "both" || sSide === current;
-    });
-  }, [index, toSvg, side, visibleLayerSet]);
+    // Both sides are on screen, so entities from either are pickable wherever their layer shows.
+    return buildHitShapes(index, toSvg, visibleLayerSet);
+  }, [index, toSvg, visibleLayerSet]);
 
   // ------- 3D render loading
   const load3d = useCallback(
@@ -397,11 +402,11 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
               <div className="board-stage" style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})`, width: dims.w, height: dims.h }}>
                 <div className="board-bg-wrap" style={{ ["--edge-stroke" as string]: `${1.25 / Math.max(scale, 0.001)}` }}>
                   {layerGeoms
-                    .filter((layer) => layer.id === "all" || !h.hiddenLayers.includes(layer.id))
+                    .filter((layer) => layer.id === "all" || visibleLayerSet.has(layer.id))
                     .map((layer) => (
                       <div
                         key={layer.id}
-                        className="board-bg-layer"
+                        className={`board-bg-layer ${side === "back" ? "flipped" : ""}`}
                         data-testid={`board-layer-${layer.id}`}
                         data-layer={layer.id}
                       >
@@ -455,23 +460,6 @@ function svgDimsOf(svg: string | null): { w: number; h: number } | null {
   if (!svg) return null;
   const m = /viewBox="([-\d.]+)\s+([-\d.]+)\s+([\d.]+)\s+([\d.]+)"/.exec(svg);
   return m ? { w: parseFloat(m[3]), h: parseFloat(m[4]) } : null;
-}
-
-/** Which side an index entity shows on (for filtering hit shapes). */
-function sideEntitySide(index: NonNullable<ReturnType<typeof getStore>["index"]>, uuid: string): "front" | "back" | "both" {
-  const pad = index.pads.find((p) => p.uuid === uuid);
-  if (pad) {
-    const f = pad.layers.includes("F.Cu");
-    const b = pad.layers.includes("B.Cu");
-    return f && b ? "both" : f ? "front" : "back";
-  }
-  const fp = index.footprints.find((f) => f.uuid === uuid);
-  if (fp) return fp.side === "front" ? "front" : "back";
-  const t = index.tracks.find((t) => t.uuid === uuid);
-  if (t) return t.layer.startsWith("F.") ? "front" : "back";
-  const z = index.zones.find((z) => z.uuid === uuid);
-  if (z) return z.layer.startsWith("F.") ? "front" : "back";
-  return "both"; // vias are through
 }
 
 function ViewerToolbar({ side, setSide, mode, render3dLoading }: { side: Side; setSide: (s: Side) => void; mode: string; render3dLoading: boolean }) {
@@ -812,17 +800,16 @@ function LayerPanel({
             data-testid={`layer-group-${group.side ?? "board"}`}
           >
             {group.title}
-            {group.side === side && <span className="layer-group-current">shown</span>}
+            {group.side === side && <span className="layer-group-current">near</span>}
           </div>
           {group.layers.map((layer) => {
             const on = !hidden.includes(layer.id);
-            const otherSide = group.side !== null && group.side !== side;
             return (
               <label
                 key={layer.id}
                 className={`layer-row ${on ? "" : "off"}`}
                 data-testid={`layer-row-${layer.id}`}
-                title={`${on ? "Hide" : "Show"} ${layer.label}${otherSide ? " (takes effect on the " + group.title.toLowerCase() + " view)" : ""}`}
+                title={`${on ? "Hide" : "Show"} ${layer.label}`}
               >
                 <input
                   type="checkbox"

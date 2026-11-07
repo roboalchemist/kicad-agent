@@ -1050,6 +1050,11 @@ button.stop-btn {
   position: absolute;
   inset: 0;
 }
+/* Flipping the view mirrors the whole composite, exactly like KiCad's "flip board": every layer
+   turns over together, so front and back artwork stay registered to one another. */
+.board-bg-layer.flipped {
+  transform: scaleX(-1);
+}
 .layer-panel {
   position: absolute;
   right: 12px;
