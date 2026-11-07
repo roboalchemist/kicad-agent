@@ -799,7 +799,8 @@ class Schematic:
         at[1] = num(new_x)
         at[2] = num(new_y)
         if rotation is not None and len(at) > 3:
-            at[3] = num(float(rotation))
+            # KiCad stores a positive angle; a negative one makes the whole file fail to load.
+            at[3] = num(float(rotation) % 360.0)
         dx, dy = new_x - old_x, new_y - old_y
         if dx or dy:
             for prop in find_all(node, "property"):
