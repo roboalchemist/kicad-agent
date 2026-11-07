@@ -71,9 +71,30 @@ type TabId = "agent" | "review" | "versions" | "activity" | "goal";
 /** The three sections of a project, switchable from the main panel's tab bar. */
 type Section = "bom" | "schematic" | "board";
 
+const SECTIONS: Section[] = ["bom", "schematic", "board"];
+
+function isSection(value: string | null): value is Section {
+  return value !== null && (SECTIONS as string[]).includes(value);
+}
+
+/** The section named by `?tab=` (the older `?section=` is still read) so links open a tab. */
+function sectionFromUrl(): Section | null {
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("tab") ?? params.get("section");
+  return isSection(value) ? value : null;
+}
+
+/** Record the open section in the URL; back/forward then walk the tabs the user visited. */
+function rememberSection(section: Section) {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("tab") === section) return;
+  url.searchParams.set("tab", section);
+  window.history.pushState(null, "", url);
+}
+
 function sectionFromStorage(): Section | null {
   const value = localStorage.getItem("harness.section");
-  return value === "bom" || value === "schematic" || value === "board" ? value : null;
+  return isSection(value) ? value : null;
 }
 
 function Harness({ threadId, errors }: { threadId: string; errors: string[] }) {
@@ -84,9 +105,17 @@ function Harness({ threadId, errors }: { threadId: string; errors: string[] }) {
   });
   const { copilotkit } = useCopilotKit();
   const [tab, setTab] = useState<TabId>("agent");
-  // Default follows the project's phase until the user picks a section explicitly.
-  const [section, setSection] = useState<Section | null>(() => sectionFromStorage());
+  // Default follows the project's phase until the user picks a section explicitly; a `?tab=`
+  // link wins over the remembered choice so a shared URL opens the tab it names.
+  const [section, setSection] = useState<Section | null>(() => sectionFromUrl() ?? sectionFromStorage());
   useHarnessTools();
+
+  // Back/forward between tabs: the URL is the source of truth once a section is in it.
+  useEffect(() => {
+    const onPop = () => setSection(sectionFromUrl() ?? sectionFromStorage());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // The agent owns the phase; the viewer follows it (schematic sheet until a board exists).
   const phase = ((agent.state as { phase?: string } | undefined)?.phase ?? h.design?.phase ?? "board") as
@@ -285,6 +314,7 @@ function Harness({ threadId, errors }: { threadId: string; errors: string[] }) {
                 onClick={() => {
                   setSection(id);
                   localStorage.setItem("harness.section", id);
+                  rememberSection(id);
                 }}
               >
                 {label}

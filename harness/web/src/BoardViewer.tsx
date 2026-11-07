@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "./api.ts";
 import {
+  BOARD_LAYERS,
   boardToSvg,
   fitView,
   getStore,
@@ -16,7 +17,9 @@ import {
   setRev,
   setBoardSize,
   setSide as setBoardSide,
+  showAllLayers,
   toggleGrid,
+  toggleLayer,
   togglePins,
   setView,
   svgToBoard,
@@ -85,6 +88,13 @@ function highlightedUuids(index: NonNullable<ReturnType<typeof getStore>["index"
 export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => void }) {
   const h = useHarness();
   const { index, svg, svgSide, side, rev, design, threads, diff, mode, selection, measure, measureA, measureB, highlight, view } = h;
+  const sideLayers = BOARD_LAYERS[side === "back" ? "back" : "front"];
+  // Layers the user has hidden in the right-hand panel; hidden layers are not painted and their
+  // entities are not clickable, so the viewer stays consistent with what it shows.
+  const visibleLayerSet = useMemo(
+    () => new Set(sideLayers.filter((layer) => !h.hiddenLayers.includes(layer.id)).map((layer) => layer.id)),
+    [sideLayers, h.hiddenLayers],
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [hover, setHover] = useState<{ shape: HitShape; label: string; mx: number; my: number } | null>(null);
@@ -131,11 +141,23 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
     }
   }, [h.focus?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const geom = useMemo(() => {
+  // One parsed SVG per layer, bottom to top; the panel hides a layer by dropping it from here.
+  const layerGeoms = useMemo(() => {
+    const key = `${rev}-${svgSide}-${h.svgKey}-${design?.board_hash ?? ""}`;
+    const layers = sideLayers.flatMap((layer) => {
+      const text = h.layerSvgs[layer.id];
+      const dims = svgDimsOf(text ?? null);
+      if (!text || !dims) return [];
+      const geom = parseSvg(text, dims.w, dims.h, `${key}-${layer.id}`);
+      return geom ? [{ id: layer.id, geom }] : [];
+    });
+    if (layers.length || !svg) return layers;
+    // Before the per-layer stack for this side arrives (or if a layer fails to plot), fall back
+    // to the single combined SVG the store last loaded, so the board never blinks away.
     const dims = svgDimsOf(svg);
-    if (!svg || !dims) return null;
-    return parseSvg(svg, dims.w, dims.h, `${rev}-${svgSide}-${h.svgKey}-${design?.board_hash ?? ""}`);
-  }, [svg, rev, svgSide, h.svgKey, design?.board_hash]);
+    const geom = dims ? parseSvg(svg, dims.w, dims.h, `${key}-all`) : null;
+    return geom ? [{ id: "all", geom }] : [];
+  }, [sideLayers, h.layerSvgs, svg, rev, svgSide, h.svgKey, design?.board_hash]);
 
   const toSvg = useCallback(
     (x: number, y: number): [number, number] => {
@@ -149,11 +171,11 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
   const hitShapes = useMemo(() => {
     if (!index) return [];
     const current = side === "back" ? "back" : "front";
-    return buildHitShapes(index, toSvg).filter((s) => {
+    return buildHitShapes(index, toSvg, visibleLayerSet).filter((s) => {
       const sSide = sideEntitySide(index, s.uuid);
       return sSide === "both" || sSide === current;
     });
-  }, [index, toSvg, side]);
+  }, [index, toSvg, side, visibleLayerSet]);
 
   // ------- 3D render loading
   const load3d = useCallback(
@@ -310,7 +332,7 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
   const cursor = mode === "select" ? "default" : mode === "comment" ? "crosshair" : "crosshair";
 
   // The overlay in svg-mm space.
-  const dims = geom?.w && geom?.h ? { w: geom.w, h: geom.h } : svgDimsOf(svg);
+  const dims = layerGeoms.length ? { w: layerGeoms[0].geom.w, h: layerGeoms[0].geom.h } : svgDimsOf(svg);
   const highlightSet = useMemo(() => (index && highlight ? highlightedUuids(index, highlight) : new Set<string>()), [index, highlight]);
   const shownThreads = useMemo(() => (threads ?? []).filter((t) => t.resolved_anchor && t.resolved_anchor.state !== "detached"), [threads]);
 
@@ -370,10 +392,21 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
                 style={{ backgroundSize: `${gridPx}px ${gridPx}px`, backgroundPosition: `${tx % gridPx}px ${ty % gridPx}px` }}
               />
             )}
-            {geom && v && dims ? (
+            {layerGeoms.length > 0 && v && dims ? (
               <div className="board-stage" style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})`, width: dims.w, height: dims.h }}>
                 <div className="board-bg-wrap" style={{ ["--edge-stroke" as string]: `${1.25 / Math.max(scale, 0.001)}` }}>
-                  {geom.bg}
+                  {layerGeoms
+                    .filter((layer) => layer.id === "all" || !h.hiddenLayers.includes(layer.id))
+                    .map((layer) => (
+                      <div
+                        key={layer.id}
+                        className="board-bg-layer"
+                        data-testid={`board-layer-${layer.id}`}
+                        data-layer={layer.id}
+                      >
+                        {layer.geom.bg}
+                      </div>
+                    ))}
                 </div>
                 <OverlaySvg
                   dims={dims}
@@ -403,6 +436,14 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
         <PickPopover />
         <MeasureBox />
         {side !== "3d" && <ScaleLegend scale={scale} gridStep={gridStep} barMM={barMM} />}
+        {side !== "3d" && (
+          <LayerPanel
+            layers={sideLayers}
+            hidden={h.hiddenLayers}
+            onToggle={toggleLayer}
+            onShowAll={showAllLayers}
+          />
+        )}
         <FitButton onFit={() => fitView(size.w, size.h)} />
       </div>
     </div>
@@ -734,6 +775,55 @@ function PickPopover() {
         at ({sel.x.toFixed(2)}, {sel.y.toFixed(2)}) · {sel.side}
       </div>
       {h.mode === "comment" && <div className="pick-hint">Open the Review tab to write the comment.</div>}
+    </div>
+  );
+}
+
+/**
+ * KiCad-style layer visibility panel: one row per plot layer of the current side, with its
+ * plotted colour, so layers can be shown together or hidden one at a time instead of only
+ * choosing a whole side.
+ */
+function LayerPanel({
+  layers,
+  hidden,
+  onToggle,
+  onShowAll,
+}: {
+  layers: typeof BOARD_LAYERS.front;
+  hidden: string[];
+  onToggle: (layer: string) => void;
+  onShowAll: () => void;
+}) {
+  const hiddenCount = hidden.length;
+  return (
+    <div className="layer-panel" data-testid="layer-panel">
+      <div className="layer-panel-head">
+        <span>Layers</span>
+        <button className="link" onClick={onShowAll} disabled={hiddenCount === 0} data-testid="layers-show-all">
+          show all
+        </button>
+      </div>
+      {layers.map((layer) => {
+        const on = !hidden.includes(layer.id);
+        return (
+          <label
+            key={layer.id}
+            className={`layer-row ${on ? "" : "off"}`}
+            data-testid={`layer-row-${layer.id}`}
+            title={`${on ? "Hide" : "Show"} ${layer.label}`}
+          >
+            <input
+              type="checkbox"
+              checked={on}
+              onChange={() => onToggle(layer.id)}
+              data-testid={`layer-toggle-${layer.id}`}
+            />
+            <span className="layer-swatch" style={{ background: layer.color }} aria-hidden="true" />
+            <span className="layer-name">{layer.label}</span>
+          </label>
+        );
+      })}
     </div>
   );
 }

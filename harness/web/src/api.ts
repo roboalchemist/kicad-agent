@@ -84,8 +84,17 @@ export const api = {
   versionSummary: (d: string, sha: string) => get<VersionSummary>(`/api/designs/${d}/versions/${sha}/summary`),
   design: (d: string) => get<DesignDetail>(`/api/designs/${d}`),
   index: (d: string, rev: string) => get<PickIndex>(`/api/designs/${d}/rev/${rev}/index`),
-  svg: async (d: string, rev: string, side: "front" | "back", cacheBust?: string | null): Promise<string> => {
-    const q = cacheBust ? `?v=${cacheBust}` : "";
+  svg: async (
+    d: string,
+    rev: string,
+    side: "front" | "back",
+    cacheBust?: string | null,
+    layers?: string[] | null,
+  ): Promise<string> => {
+    const params = new URLSearchParams();
+    if (cacheBust) params.set("v", cacheBust);
+    if (layers && layers.length) params.set("layers", layers.join(","));
+    const q = params.size ? `?${params.toString()}` : "";
     const res = await fetch(`/api/designs/${d}/rev/${rev}/svg/${side}${q}`);
     if (!res.ok) throw new Error(`svg: ${res.status}`);
     return res.text();

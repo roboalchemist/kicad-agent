@@ -414,6 +414,10 @@ The UI therefore updates live even while a headless CLI run edits the design fro
 **Board viewer (main area)**, with tabs **Front**, **Back** and **3D**.
 - **2D view:**
   - Shows `GET .../rev/{rev}/svg/{side}` as a background (an inline SVG or `<img>` sized in mm).
+  - Layers are plotted one at a time (`/svg/{side}?layers=F.Cu`), cached per board hash and layer
+    subset, and stacked bottom-to-top in the browser. A KiCad-style panel on the right of the
+    board area toggles each layer (persisted); hidden layers are not painted and their entities
+    are not pickable. `?tab=bom|schematic|board` in the page URL selects the main section.
   - Draws an overlay `<svg>` in the same mm coordinate system, built from `GET .../rev/{rev}/index`:
     - footprints: bbox rects, visually invisible;
     - pads: their polygons;

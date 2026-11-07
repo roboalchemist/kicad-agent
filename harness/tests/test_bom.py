@@ -47,6 +47,48 @@ def test_group_bom_keeps_different_values_apart() -> None:
     assert len(lines) == 3, "value and footprint both distinguish parts"
 
 
+def test_group_bom_merges_a_part_number_whatever_the_schematic_value() -> None:
+    """Nineteen terminal blocks wired to different nets are one orderable part, not nineteen.
+
+    A connector's schematic value is the net it carries, so grouping on value would print a
+    nineteen-line BOM for one screw-terminal part number.
+    """
+    footprint = "TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal"
+    values = ["20V IN", "PSU 20V IN", "PSU 5V OUT"] + [f"OUT{i}" for i in range(1, 17)]
+    rows = [
+        {"ref": f"J{31 + i}", "value": value, "footprint": footprint, "lcsc": "C2898709"}
+        for i, value in enumerate(values)
+    ]
+    lines, total = group_bom(rows)
+    assert total == 19
+    assert len(lines) == 1, [line["value"] for line in lines]
+    line = lines[0]
+    assert line["qty"] == 19 and line["lcsc"] == "C2898709"
+    assert line["refs"] == [f"J{31 + i}" for i in range(19)]
+    assert set(line["values"]) == set(values), "the merged line keeps every value it absorbed"
+
+
+def test_group_bom_merges_connectors_by_footprint_before_they_are_sourced() -> None:
+    """A connector with no part number yet still groups by footprint: values are net names."""
+    footprint = "Connector:PinHeader_1x02_P2.54mm_Vertical"
+    rows = [
+        {"ref": "J1", "value": "SDA", "footprint": footprint, "lcsc": ""},
+        {"ref": "J2", "value": "SCL", "footprint": footprint, "lcsc": ""},
+    ]
+    lines, _total = group_bom(rows)
+    assert len(lines) == 1 and lines[0]["qty"] == 2
+
+
+def test_group_bom_keeps_different_part_numbers_apart() -> None:
+    """Two different parts in one footprint must stay two lines even if a value is the same."""
+    rows = [
+        {"ref": "F1", "value": "2A", "footprint": "Fuse:Fuse_1206_3216Metric", "lcsc": "C3105"},
+        {"ref": "F2", "value": "2A", "footprint": "Fuse:Fuse_1206_3216Metric", "lcsc": "C12345"},
+    ]
+    lines, _total = group_bom(rows)
+    assert len(lines) == 2, "the part number is the identity"
+
+
 def _client(services) -> httpx.AsyncClient:
     app = create_app()
     app.state.services, app.state.metric_tasks = services, set()

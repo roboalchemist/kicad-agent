@@ -91,6 +91,23 @@ def test_index_svg_drc_stats_build_once(arts, counted):
         "back.svg", "board.kicad_pcb", "drc.json", "front.svg", "index.json", "stats.json"]
 
 
+def test_svg_can_be_plotted_one_layer_at_a_time(arts, counted):
+    """The layer panel asks for one layer at a time; each subset is built once and cached."""
+    h, _ = arts.materialize(FIXTURE.read_bytes())
+    copper = arts.svg(h, "front", ["F.Cu"])
+    assert "#C83434" in copper, "F.Cu is plotted in the copper colour"
+    silk = arts.svg(h, "front", ["F.SilkS"])
+    assert silk != copper
+    assert arts.svg(h, "front", ["F.Cu"]) == copper, "the per-layer SVG is cached by hash and subset"
+    # Request order does not create a second cache entry: the plot order is canonical.
+    assert arts.svg(h, "front", ["Edge.Cuts", "F.Cu"]) == arts.svg(h, "front", ["F.Cu", "Edge.Cuts"])
+    assert counted["export_svg"] == 3
+    with pytest.raises(EngineError):
+        arts.svg(h, "front", ["B.Cu"])  # a back layer is not a front-side layer
+    with pytest.raises(EngineError):
+        arts.svg(h, "front", [])
+
+
 def test_concurrent_builds_happen_once(arts):
     h, _ = arts.materialize(FIXTURE.read_bytes())
     barrier = threading.Barrier(4)

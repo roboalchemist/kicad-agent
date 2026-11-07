@@ -43,10 +43,12 @@ export function onSide(e: { layers?: string[]; side?: string; layer?: string }, 
  * Build hit shapes in svg-mm coordinates.
  * `toSvg` maps board mm -> svg mm (front: x-ex; back: mirrored).
  */
-export function buildHitShapes(index: PickIndex, toSvg: (x: number, y: number) => [number, number]): HitShape[] {
+export function buildHitShapes(index: PickIndex, toSvg: (x: number, y: number) => [number, number], visible?: Set<string>): HitShape[] {
   const shapes: HitShape[] = [];
+  const shown = (layer?: string | null) => !visible || !layer || layerShown(layer, visible);
   // DOM order = pick priority (topmost last): zones < tracks < vias < footprints < pads.
   for (const z of index.zones) {
+    if (!shown(z.layer)) continue;
     const pts = z.outline.map((p) => toSvg(p[0], p[1]));
     if (pts.length > 2) {
       const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
@@ -55,26 +57,40 @@ export function buildHitShapes(index: PickIndex, toSvg: (x: number, y: number) =
     }
   }
   for (const t of index.tracks) {
+    if (!shown(t.layer)) continue;
     const [x1, y1] = toSvg(t.x1, t.y1);
     const [x2, y2] = toSvg(t.x2, t.y2);
     shapes.push({ uuid: t.uuid, kind: "track", d: `M${r2(x1)} ${r2(y1)} L${r2(x2)} ${r2(y2)}`, center: toSvg((t.x1 + t.x2) / 2, (t.y1 + t.y2) / 2) });
   }
   for (const v of index.vias) {
+    if (visible && !visible.has("F.Cu") && !visible.has("B.Cu")) continue;
     const [cx, cy] = toSvg(v.x, v.y);
     const r = v.size / 2;
     shapes.push({ uuid: v.uuid, kind: "via", d: `M${r2(cx - r)} ${r2(cy)} A${r2(r)} ${r2(r)} 0 1 0 ${r2(cx + r)} ${r2(cy)} A${r2(r)} ${r2(r)} 0 1 0 ${r2(cx - r)} ${r2(cy)} Z`, center: [cx, cy] });
   }
   for (const fp of index.footprints) {
+    // A footprint's picture is its silkscreen; with the silk hidden there is nothing to click.
+    if (visible && !visible.has(fp.side === "back" ? "B.SilkS" : "F.SilkS")) continue;
     const [x, y, w, h] = fp.bbox;
     const [x1, y1] = toSvg(x, y);
     const [x2, y2] = toSvg(x + w, y + h);
     shapes.push({ uuid: fp.uuid, kind: "footprint", d: rectD([Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1)]), center: toSvg(fp.x, fp.y) });
   }
   for (const pad of index.pads) {
+    if (visible && !pad.layers.some((layer) => layerShown(layer, visible))) continue;
     const pts = pad.polygon?.map((p) => toSvg(p[0], p[1]));
     if (pts && pts.length) shapes.push({ uuid: pad.uuid, kind: "pad", d: polygonD(pts), center: toSvg(pad.x, pad.y) });
   }
   return shapes;
+}
+
+/** Whether a plotted layer is shown, expanding KiCad's wildcard pad layers (``*.Cu``, ``*.Mask``). */
+function layerShown(layer: string, visible: Set<string>): boolean {
+  if (visible.has(layer)) return true;
+  if (layer === "*.Cu") return visible.has("F.Cu") || visible.has("B.Cu");
+  if (layer === "*.Mask") return visible.has("F.Mask") || visible.has("B.Mask");
+  if (layer === "*.Paste") return visible.has("F.Paste") || visible.has("B.Paste");
+  return false;
 }
 
 export interface EntityAt {

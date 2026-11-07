@@ -23,6 +23,7 @@ import os
 import threading
 import uuid
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Callable
 
 from ..config import Config
@@ -33,6 +34,8 @@ LAYERS = {
     "front": ["F.Cu", "F.Mask", "F.SilkS", "Edge.Cuts"],
     "back": ["B.Cu", "B.Mask", "B.SilkS", "Edge.Cuts"],
 }
+# The layer panel shows one checkbox per plot layer, so each is also rendered on its own and the
+# viewer toggles the stacked SVGs without asking the server again.
 RENDER_URL = "/api/renders/"
 # Bump whenever the bytes of a cached artifact change for the same board (theme/plot changes).
 # Included in both cache paths so old entries are simply ignored.
@@ -123,13 +126,29 @@ class Artifacts:
                              lambda tmp: self._write_json(tmp, self.engine.index(board)))
         return json.loads(target.read_text(encoding="utf-8"))
 
-    def svg_path(self, hash: str, side: str) -> Path:
-        """Path of the front or back SVG (back is mirrored), building it if needed."""
+    def svg_path(self, hash: str, side: str, layers: Sequence[str] | None = None) -> Path:
+        """Path of the front or back SVG (back is mirrored), building it if needed.
+
+        ``layers`` plots only those layers; the default is every layer of the side. Each subset
+        is cached under a bitmask of the side's layer order, so the layer panel can ask for one
+        layer at a time and the browser assembles the stack from cached files.
+        """
         if side not in LAYERS:
             raise EngineError("InvalidParams", f"side must be 'front' or 'back', got {side!r}")
+        order = LAYERS[side]
+        unknown = [layer for layer in (layers or []) if layer not in order]
+        if unknown:
+            raise EngineError(
+                "InvalidParams",
+                f"layers must be a subset of {order} for the {side} side, got {list(layers or [])}",
+            )
+        chosen = [layer for layer in order if layer in (layers if layers is not None else order)]
+        if not chosen:
+            raise EngineError("InvalidParams", f"no {side} layers to plot")
+        name = side if chosen == order else f"{side}-{sum(1 << order.index(l) for l in chosen)}"
         board = self.board_path(hash)
-        return self._build(f"{hash}/svg-{side}", board.parent / f"{side}.svg",
-                           lambda tmp: kicad_cli.export_svg(board, LAYERS[side], tmp, mirror=side == "back",
+        return self._build(f"{hash}/svg-{name}", board.parent / f"{name}.svg",
+                           lambda tmp: kicad_cli.export_svg(board, chosen, tmp, mirror=side == "back",
                                                             config=self.config))
 
     def glb_path(self, hash: str) -> Path:
@@ -138,9 +157,9 @@ class Artifacts:
         return self._build(f"{hash}/glb", board.parent / "board.glb",
                            lambda tmp: kicad_cli.export_glb(board, tmp, config=self.config))
 
-    def svg(self, hash: str, side: str) -> str:
-        """SVG text of the front or back of the board."""
-        return self.svg_path(hash, side).read_text(encoding="utf-8")
+    def svg(self, hash: str, side: str, layers: Sequence[str] | None = None) -> str:
+        """SVG text of the front or back of the board, optionally of one layer subset."""
+        return self.svg_path(hash, side, layers).read_text(encoding="utf-8")
 
     def drc(self, hash: str) -> dict[str, Any]:
         """Normalized DRC report."""

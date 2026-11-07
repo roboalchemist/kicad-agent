@@ -49,6 +49,8 @@ export interface BomLine {
   refs: string[];
   qty: number;
   value: string;
+  /** Every schematic value that was merged into this line (connectors carry net names). */
+  values?: string[];
   footprint: string;
   lcsc: string;
   url?: string;

@@ -224,15 +224,45 @@ def _match_line(value: str, footprint: str, *, basic_only: bool = False) -> Matc
     )
 
 
-def _line_groups(doc: Any) -> dict[tuple[str, str], list[str]]:
-    """``(value, footprint) -> refs``, grouped exactly as the BOM groups lines."""
-    groups: dict[tuple[str, str], list[str]] = {}
+# Footprints whose "value" is a net name or a label rather than a part value: every terminal
+# block in a pinout is the same screw terminal, whatever the schematic calls its pinout.
+_LABELLED_FOOTPRINT = re.compile(
+    r"(TerminalBlock|PinHeader|PinSocket|Pin_Header|Connector|ScrewTerminal|BarrelJack)", re.I
+)
+
+
+def part_key(value: str, footprint: str, lcsc: str = "") -> tuple[str, ...]:
+    """What has to be ordered as *one* part — the identity a BOM line groups on.
+
+    The supplier part number is authoritative when there is one: two symbols with the same LCSC
+    code are the same reel, even if their schematic values differ. Without a code, connectors
+    group by footprint alone, because a connector's value is normally the net it carries
+    (``OUT1``…``OUT16`` are nineteen identical screw terminals, not nineteen parts). Every other
+    part groups by value *and* footprint, so 10k and 47k in the same 0805 package stay apart.
+    """
+    code = (lcsc or "").strip().upper()
+    if code:
+        return ("lcsc", code)
+    fp = (footprint or "").strip()
+    if _LABELLED_FOOTPRINT.search(fp):
+        return ("footprint", fp)
+    return ("value", (value or "").strip(), fp)
+
+
+def _line_groups(doc: Any) -> dict[tuple[str, ...], dict[str, Any]]:
+    """``part identity -> {value, footprint, refs}``, grouped exactly as the BOM groups lines."""
+    groups: dict[tuple[str, ...], dict[str, Any]] = {}
     for placement in doc.placements():
         if placement.reference.startswith("#"):  # power flags are not parts
             continue
-        groups.setdefault((placement.value.strip(), placement.footprint.strip()), []).append(
-            placement.reference
+        value = placement.value.strip()
+        footprint = placement.footprint.strip()
+        code = (placement.properties or {}).get("LCSC") or ""
+        entry = groups.setdefault(
+            part_key(value, footprint, code),
+            {"value": value, "footprint": footprint, "refs": []},
         )
+        entry["refs"].append(placement.reference)
     return groups
 
 
@@ -264,7 +294,8 @@ def resolve_workspace(ws: Any, *, prefer_basic: bool = True, resourced: bool = T
     switched: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
 
-    for (value, footprint), refs in sorted(_line_groups(doc).items()):
+    for _key, line in sorted(_line_groups(doc).items()):
+        value, footprint, refs = line["value"], line["footprint"], line["refs"]
         current = _current_lcsc(doc, refs)
         if current:
             if not (resourced and prefer_basic):
@@ -380,7 +411,8 @@ def basic_report(ws: Any) -> dict[str, Any]:
     doc = Schematic.load(ws.schematic_path)
     budget = power_budget(doc)
     lines: list[dict[str, Any]] = []
-    for (value, footprint), refs in sorted(_line_groups(doc).items()):
+    for _key, line in sorted(_line_groups(doc).items()):
+        value, footprint, refs = line["value"], line["footprint"], line["refs"]
         lcsc = _current_lcsc(doc, refs)
         current = _catalogue_row(lcsc) if lcsc else None
         tier = (current or {}).get("tier")

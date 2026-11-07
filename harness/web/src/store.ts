@@ -22,6 +22,31 @@ import type {
 export type Side = "front" | "back" | "3d";
 export type ViewerMode = "select" | "comment" | "measure";
 
+/** A plot layer of one board side: what the right-hand layer panel toggles. */
+export interface BoardLayer {
+  id: string;
+  label: string;
+  /** Colour kicad-cli plots it in (KiCad's default theme), shown as the panel's swatch. */
+  color: string;
+}
+
+/** The layers of each side, bottom to top, in the order they are stacked in the viewer. */
+export const BOARD_LAYERS: Record<"front" | "back", BoardLayer[]> = {
+  front: [
+    { id: "F.Cu", label: "F.Cu", color: "#C83434" },
+    { id: "F.Mask", label: "F.Mask", color: "#D864FF" },
+    { id: "F.SilkS", label: "F.Silkscreen", color: "#F2EDA1" },
+    { id: "Edge.Cuts", label: "Edge.Cuts", color: "#D0D2CD" },
+  ],
+  back: [
+    { id: "B.Cu", label: "B.Cu", color: "#4D7FC4" },
+    { id: "B.Mask", label: "B.Mask", color: "#02FFEE" },
+    { id: "B.SilkS", label: "B.Silkscreen", color: "#E8B2A7" },
+    { id: "Edge.Cuts", label: "Edge.Cuts", color: "#D0D2CD" },
+  ],
+};
+
+
 /** The entity the user picked in the viewer (an anchor in the making). */
 export interface Pick {
   kind: "footprint" | "pad" | "track" | "via" | "zone" | "point";
@@ -57,7 +82,11 @@ export interface HarnessData {
   rev: string; // "working" or a sha
   side: Side;
   index: PickIndex | null;
-  svg: string | null; // SVG text for (rev, side)
+  svg: string | null; // SVG text for (rev, side); the Edge.Cuts layer when per-layer stacks load
+  /** One SVG per plot layer of the current side, so the layer panel can toggle without a re-render. */
+  layerSvgs: Record<string, string>;
+  /** Layers the user has hidden in the right-hand layer panel (persisted). */
+  hiddenLayers: string[];
   svgSide: "front" | "back" | null;
   svgKey: number; // bump to force reload (cache-bust)
   threads: Thread[];
@@ -105,6 +134,8 @@ const initial: HarnessData = {
   side: "front",
   index: null,
   svg: null,
+  layerSvgs: {},
+  hiddenLayers: hiddenLayersFromStorage(),
   svgSide: null,
   svgKey: 0,
   threads: [],
@@ -228,8 +259,22 @@ export async function loadSvg() {
   // A schematic-phase design has no board to plot; the schematic viewer loads its own sheet.
   if (design?.phase === "schematic") return;
   await catchErr(async () => {
-    const text = await api.svg(name, rev, side, svgKey ? `${svgKey}-${design?.board_hash ?? ""}` : design?.board_hash);
-    setStore({ svg: text, svgSide: side as "front" | "back" });
+    const layers = BOARD_LAYERS[side];
+    const bust = svgKey ? `${svgKey}-${design?.board_hash ?? ""}` : design?.board_hash;
+    const results = await Promise.allSettled(
+      layers.map((layer) => api.svg(name, rev, side, bust, [layer.id])),
+    );
+    const layerSvgs: Record<string, string> = {};
+    results.forEach((result, i) => {
+      if (result.status === "fulfilled") layerSvgs[layers[i].id] = result.value;
+    });
+    if (!Object.keys(layerSvgs).length) throw new Error("no board layer could be plotted");
+    setStore({
+      // Edge.Cuts carries the page/viewBox every side shares, so it is the dimension reference.
+      svg: layerSvgs["Edge.Cuts"] ?? Object.values(layerSvgs)[0],
+      layerSvgs,
+      svgSide: side,
+    });
   });
 }
 
@@ -374,6 +419,41 @@ function pinsFromStorage(): boolean {
     return localStorage.getItem("kicad-harness-pins") !== "0";
   } catch {
     return true;
+  }
+}
+
+function hiddenLayersFromStorage(): string[] {
+  try {
+    const raw = localStorage.getItem("kicad-harness-hidden-layers");
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((l): l is string => typeof l === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+const knownLayers = new Set(Object.values(BOARD_LAYERS).flat().map((layer) => layer.id));
+
+/** Show or hide one plot layer (KiCad-style layer visibility). Persisted across reloads. */
+export function toggleLayer(layer: string): void {
+  if (!knownLayers.has(layer)) return;
+  const hidden = getStore().hiddenLayers;
+  const next = hidden.includes(layer) ? hidden.filter((l) => l !== layer) : [...hidden, layer];
+  setStore({ hiddenLayers: next });
+  try {
+    localStorage.setItem("kicad-harness-hidden-layers", JSON.stringify(next));
+  } catch {
+    // storage disabled
+  }
+}
+
+/** Turn every layer of the current side (and the other one) back on. */
+export function showAllLayers(): void {
+  setStore({ hiddenLayers: [] });
+  try {
+    localStorage.removeItem("kicad-harness-hidden-layers");
+  } catch {
+    // storage disabled
   }
 }
 

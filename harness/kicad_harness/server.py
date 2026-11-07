@@ -92,22 +92,29 @@ def ref_sort_key(ref: str) -> tuple:
 def group_bom(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     """Group identical parts into BOM lines, as a real BOM does.
 
-    Rows with the same value, footprint and LCSC part collapse into one line carrying every
-    reference. Returns ``(lines, total_qty)`` with lines ordered by reference.
+    A line is an *orderable part*, not a schematic value. Two symbols carrying the same LCSC
+    code are the same reel and collapse into one line whatever their values say; without a code,
+    connectors group by footprint because a connector's value is the net it carries (nineteen
+    terminal blocks wired as OUT1…OUT16 are one line of nineteen). Any other unsourced part
+    groups by value *and* footprint, so 10k and 47k resistors stay separate.
+
+    Returns ``(lines, total_qty)`` with lines ordered by reference; each line also lists the
+    distinct ``values`` it merged, so a schematic inconsistency is still visible.
     """
-    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    from kicad_harness.engine.bom_source import part_key
+
+    groups: dict[tuple[str, ...], dict[str, Any]] = {}
     for row in rows:
-        key = (
-            str(row.get("value") or "").strip(),
-            str(row.get("footprint") or "").strip(),
-            str(row.get("lcsc") or "").strip().upper(),
-        )
+        value = str(row.get("value") or "").strip()
+        footprint = str(row.get("footprint") or "").strip()
+        lcsc = str(row.get("lcsc") or "").strip().upper()
+        key = part_key(value, footprint, lcsc)
         line = groups.get(key)
         if line is None:
             line = groups[key] = {
-                "value": key[0],
-                "footprint": key[1],
-                "lcsc": key[2],
+                "value": value,
+                "footprint": footprint,
+                "lcsc": lcsc,
                 "description": row.get("description") or "",
                 "mpn": row.get("mpn") or "",
                 "url": row.get("url") or "",
@@ -115,8 +122,12 @@ def group_bom(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
                 "stock": row.get("stock"),
                 "unit_price": row.get("unit_price"),
                 "refs": [],
+                "values": [],
+                "_values_by_ref": {},
             }
-        line["refs"].append(str(row.get("ref") or ""))
+        ref = str(row.get("ref") or "")
+        line["refs"].append(ref)
+        line["_values_by_ref"][ref] = value
         # Keep supplier facts if a later row for the same part carried them.
         for field in ("mpn", "url", "tier", "stock", "unit_price"):
             if line.get(field) in (None, "") and row.get(field) not in (None, ""):
@@ -126,6 +137,16 @@ def group_bom(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     for line in lines:
         line["refs"] = sorted((r for r in line["refs"] if r), key=ref_sort_key)
         line["qty"] = len(line["refs"])
+        by_ref = line.pop("_values_by_ref")
+        line["values"] = [by_ref[r] for r in line["refs"] if by_ref.get(r)]
+        # De-duplicate while preserving reference order, so the value shown is the one on the
+        # first reference of the line.
+        seen: list[str] = []
+        for value in line["values"]:
+            if value not in seen:
+                seen.append(value)
+        line["values"] = seen
+        line["value"] = seen[0] if seen else line["value"]
     lines.sort(key=lambda ln: ref_sort_key(ln["refs"][0]) if ln["refs"] else ("", 0, ""))
     return lines, sum(line["qty"] for line in lines)
 
@@ -1138,12 +1159,36 @@ def create_app() -> FastAPI:
         return {**index, "board_hash": board_hash}
 
     @app.get("/api/designs/{design}/rev/{rev}/svg/{side}")
-    async def rev_svg(request: Request, design: str, rev: str, side: str):
+    async def rev_svg(request: Request, design: str, rev: str, side: str, layers: str | None = None):
+        """One side of the board as SVG, optionally plotting only ``layers`` (comma-separated).
+
+        The viewer asks for each layer on its own so its layer panel can show and hide them
+        without another render; without ``layers`` the side's full stack is returned.
+        """
         if side not in ("front", "back"):
             raise HTTPException(400, "side must be front or back")
+        from kicad_harness.engine.artifacts import LAYERS
+
+        chosen: list[str] | None = None
+        if layers is not None:
+            chosen = [layer.strip() for layer in layers.split(",") if layer.strip()]
+            unknown = [layer for layer in chosen if layer not in LAYERS[side]]
+            if unknown or not chosen:
+                raise HTTPException(
+                    400,
+                    f"layers must be a non-empty subset of {LAYERS[side]}, "
+                    f"unknown: {', '.join(unknown) or '(none given)'}",
+                )
         svc = _svc(request)
         board_hash = await _rev_hash(svc, _workspace(svc, design), rev)
-        svg = await asyncio.to_thread(svc.artifacts.svg, board_hash, side)
+        try:
+            svg = await asyncio.to_thread(svc.artifacts.svg, board_hash, side, chosen)
+        except Exception as exc:  # invalid layer names surface as a 400, not a 500
+            from kicad_harness.engine.client import EngineError
+
+            if isinstance(exc, EngineError) and exc.type == "InvalidParams":
+                raise HTTPException(400, str(exc)) from exc
+            raise
         text = Path(svg).read_text() if isinstance(svg, Path) else svg
         return Response(text, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=31536000"}
                         if rev not in ("working", "WORKING") else {})

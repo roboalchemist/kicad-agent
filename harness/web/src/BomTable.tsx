@@ -1,9 +1,11 @@
-/** Bill of materials: one row per distinct part, with every reference that uses it.
+/** Bill of materials: one row per orderable part, with every reference that uses it.
  *
  * Soldering a board means ordering per *part*, not per component, so identical parts collapse
- * into a single line (R1, R2, R10) the way a real BOM does. Supplier columns always render, and
- * the header states how much of the BOM is basic-tier — JLCPCB charges a reel fee for every
- * extended part, so "how many are basic" is a cost question, not a cosmetic one.
+ * into a single line (R1, R2, R10) the way a real BOM does — including when the schematic labels
+ * them differently: nineteen terminal blocks wired to OUT1…OUT16 share one part number and are
+ * one line. Supplier columns always render, and the header states how much of the BOM is
+ * basic-tier — JLCPCB charges a reel fee for every extended part, so "how many are basic" is a
+ * cost question, not a cosmetic one.
  */
 
 import { useEffect, useState } from "react";
@@ -121,10 +123,17 @@ export function BomTable({ design }: { design: string }) {
             </thead>
             <tbody>
               {bom.lines.map((line) => (
-                <tr key={`${line.value}|${line.footprint}|${line.lcsc}`}>
+                <tr key={line.refs[0] ?? `${line.value}|${line.footprint}|${line.lcsc}`}>
                   <td className="bom-refs">{line.refs.join(", ")}</td>
                   <td>{line.qty}</td>
-                  <td>{line.value || "—"}</td>
+                  <td title={line.values && line.values.length > 1 ? line.values.join(", ") : undefined}>
+                    {line.value || "—"}
+                    {line.values && line.values.length > 1 && (
+                      <span className="bom-value-more" data-testid="bom-value-more">
+                        +{line.values.length - 1}
+                      </span>
+                    )}
+                  </td>
                   <td title={line.footprint}>{shortFootprint(line.footprint)}</td>
                   {hasSupplier && (
                     <td className="bom-lcsc">
