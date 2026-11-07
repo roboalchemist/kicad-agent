@@ -1358,13 +1358,21 @@ def create_app() -> FastAPI:
             except Exception:
                 erc_counts = {"errors": 1, "warnings": 0}
             from kicad_harness.agent.audit import design_parts
+            from kicad_harness.engine import layout as layout_mod
+            from kicad_harness.engine.schematic import Schematic
 
+            try:
+                layout_report = await asyncio.to_thread(
+                    lambda: layout_mod.analyze(Schematic.load(ws.schematic_path)))
+            except Exception:
+                layout_report = None
             parts = await asyncio.to_thread(design_parts, svc, ws)
             return goals.evaluate(
                 ws.goal(), {}, {"erc_counts": erc_counts,
                                 "board_laid_out": ws.board_path.is_file(),
                                 "schematic_missing": parts["missing_from_schematic"],
-                                "board_missing": parts["missing_from_board"]},
+                                "board_missing": parts["missing_from_board"],
+                                "schematic_layout": layout_report},
                 svc.store.review.list(design),
             )
         board_hash = await _rev_hash(svc, ws, rev)
@@ -1381,9 +1389,20 @@ def create_app() -> FastAPI:
             except Exception:
                 drc = {**drc, "erc_counts": None}
         parts = await asyncio.to_thread(design_parts, svc, ws)
+        layout_report = None
+        if ws.schematic_path.is_file():
+            from kicad_harness.engine import layout as layout_mod
+            from kicad_harness.engine.schematic import Schematic
+
+            try:
+                layout_report = await asyncio.to_thread(
+                    lambda: layout_mod.analyze(Schematic.load(ws.schematic_path)))
+            except Exception:
+                layout_report = None
         drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
                "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
-               "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"]}
+               "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"],
+               "schematic_layout": layout_report}
         return goals.evaluate(ws.goal(), index, drc, svc.store.review.list(design))
 
     # ------------------------------------------------------------------ steering (messages mid-run)

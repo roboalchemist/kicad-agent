@@ -304,13 +304,22 @@ def _eval_inputs(svc, ws, name):
         except Exception:
             counts = {"errors": 1, "warnings": 0}
         try:
-            floating = len(Schematic.load(ws.schematic_path).unconnected_pins())
+            doc = Schematic.load(ws.schematic_path)
+            floating = len(doc.unconnected_pins())
         except Exception:
+            doc = None
             floating = 0
+        from kicad_harness.engine import layout as layout_mod
+
+        try:
+            layout_report = layout_mod.analyze(doc) if doc is not None else None
+        except Exception:
+            layout_report = None
         return {}, {
             "erc_counts": counts,
             "unconnected_pins": floating,
             "board_laid_out": False,
+            "schematic_layout": layout_report,
         }, threads
 
     board_hash, _ = svc.artifacts.materialize(ws.board_path.read_bytes())
@@ -324,9 +333,19 @@ def _eval_inputs(svc, ws, name):
         except Exception:
             drc = {**drc, "erc_counts": None}
     parts = design_parts(svc, ws)
+    layout_report = None
+    if ws.schematic_path.is_file():
+        from kicad_harness.engine import layout as layout_mod
+        from kicad_harness.engine.schematic import Schematic
+
+        try:
+            layout_report = layout_mod.analyze(Schematic.load(ws.schematic_path))
+        except Exception:
+            layout_report = None
     drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
            "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
-           "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"]}
+           "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"],
+           "schematic_layout": layout_report}
     return svc.artifacts.index(board_hash), drc, threads
 
 

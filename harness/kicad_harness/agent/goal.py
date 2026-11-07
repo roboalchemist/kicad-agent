@@ -36,6 +36,7 @@ CRITERIA: dict[str, tuple[tuple[str, ...], str]] = {
     "design_sync": (("max_gaps",), "BOM, schematic and board agree (gaps <= {max_gaps})"),
     "requirements": (("max_short",), "brief requirements met (shortfalls <= {max_short})"),
     "schematic_parity": (("max_missing",), "schematic and board describe the same parts (missing <= {max_missing})"),
+    "schematic_legibility": (("max",), "schematic layout violations <= {max}"),
 }
 
 Measure = Callable[[dict, str, str], dict]
@@ -227,6 +228,17 @@ def evaluate_criterion(
                     f"{' (' + ', '.join(missing_brd[:8]) + ')' if missing_brd else ''} (max {allowed})"
                 ),
             )
+        elif ctype == "schematic_legibility":
+            layout = (drc or {}).get("schematic_layout")
+            if layout is None:
+                result.update(value=None, passed=False, detail="schematic layout was not measured")
+            else:
+                value = int(layout.get("score", 0))
+                counts = layout.get("counts") or {}
+                named = ", ".join(f"{k.replace('_', ' ')}={v}" for k, v in counts.items() if v)
+                result.update(value=value, passed=value <= c["max"],
+                              detail=(f"{value} layout violation(s) (max {c['max']})"
+                                      + (f": {named}" if named else "")))
         elif ctype == "unconnected_pins":
             value = int((drc or {}).get("unconnected_pins", 0))
             result.update(value=value, passed=value <= c["max"],
@@ -256,6 +268,7 @@ def evaluate_criterion(
 # stricter, but it cannot relax or remove these.
 BASELINE: list[dict[str, Any]] = [
     {"id": "erc", "type": "erc_errors", "max": 0, "needs": "schematic"},
+    {"id": "legible", "type": "schematic_legibility", "max": 0, "needs": "schematic_layout"},
     {"id": "drc", "type": "drc_errors", "max": 0, "needs": "board"},
     {"id": "routing", "type": "unconnected", "max": 0, "needs": "board"},
     {"id": "parity", "type": "schematic_parity", "max_missing": 0, "needs": "parity"},
@@ -272,6 +285,8 @@ def _applicable(requirement: dict[str, Any], drc: dict | None, goal: dict[str, A
         return "counts" in drift
     if needs == "schematic":
         return "erc_counts" in drift
+    if needs == "schematic_layout":
+        return "schematic_layout" in drift
     if needs == "parity":
         return "schematic_missing" in drift or "board_missing" in drift
     if needs == "sync":

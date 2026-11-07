@@ -781,6 +781,48 @@ class Schematic:
         self.tree[:] = [c for c in self.tree if not self._wire_touches(c, ends)]
         return True
 
+    def move_symbol(self, reference: str, x: float, y: float,
+                    rotation: float | None = None) -> bool:
+        """Move (and optionally rotate) a placed symbol, carrying its reference/value text.
+
+        Used by the tidy layout, which re-places every symbol on a grid: the text has to travel
+        with the body, or the sheet ends up with references floating where the symbols used to be.
+        """
+        node = self._symbol_node(reference)
+        if node is None:
+            return False
+        at = find_one(node, "at")
+        if at is None or len(at) < 3:
+            return False
+        old_x, old_y = float(at[1]), float(at[2])
+        new_x, new_y = snap(x), snap(y)
+        at[1] = num(new_x)
+        at[2] = num(new_y)
+        if rotation is not None and len(at) > 3:
+            at[3] = num(float(rotation))
+        dx, dy = new_x - old_x, new_y - old_y
+        if dx or dy:
+            for prop in find_all(node, "property"):
+                prop_at = find_one(prop, "at")
+                if prop_at and len(prop_at) > 2:
+                    prop_at[1] = num(float(prop_at[1]) + dx)
+                    prop_at[2] = num(float(prop_at[2]) + dy)
+        return True
+
+    def add_no_connect(self, x: float, y: float) -> list:
+        """Mark a pin as deliberately unconnected (KiCad's no-connect cross)."""
+        node = ["no_connect", ["at", num(snap(x)), num(snap(y))], ["uuid", Q(new_uuid())]]
+        self._insert_after_uuid(node)
+        return node
+
+    def _symbol_node(self, reference: str) -> list | None:
+        """The top-level ``symbol`` node whose Reference property is ``reference``."""
+        for symbol in self.symbols:
+            for prop in find_all(symbol, "property"):
+                if len(prop) > 2 and str(prop[1]) == "Reference" and str(prop[2]) == reference:
+                    return symbol
+        return None
+
     def add_wire(self, points: Sequence[Sequence[float]], net: str | None = None) -> list[list]:
         """Add a wire through ``points`` and, optionally, a local label on its first point.
 

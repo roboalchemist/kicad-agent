@@ -201,6 +201,7 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
             "erc_counts": erc_counts,
             "board_laid_out": ws.board_path.is_file(),
             "unconnected_pins": floating,
+            "schematic_layout": await asyncio.to_thread(_schematic_layout_facts, ws),
         }
         evaluation = goals.evaluate(ws.goal(), {}, fake, threads)
         ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
@@ -225,10 +226,28 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
         "sync_gaps": facts["sync_gaps"],
         "requirements": facts["requirements"],
         "requirement_gaps": facts["requirement_gaps"],
+        "schematic_layout": await asyncio.to_thread(_schematic_layout_facts, ws),
     }
     evaluation = goals.evaluate(ws.goal(), index, drc, threads)
     ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
     return evaluation
+
+
+def _schematic_layout_facts(ws) -> dict[str, Any] | None:
+    """Legibility measurement of the schematic, or None when it cannot be read.
+
+    None (rather than a zero score) makes the [legible] criterion fail: an unmeasured sheet must
+    never look like a passing one.
+    """
+    from kicad_harness.engine import layout
+    from kicad_harness.engine.schematic import Schematic
+
+    if not ws.schematic_path.is_file():
+        return None
+    try:
+        return layout.analyze(Schematic.load(ws.schematic_path))
+    except Exception:
+        return None
 
 
 def _parts_facts(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
@@ -638,11 +657,12 @@ back your work.
 
 Goal handling:
 - When the user states a goal in words ("move the LED to the left edge", "keep it under 30 mm"), turn it into machine-checkable criteria yourself and save them with `set_goal`. Inspect the board first (design_summary, query, measure) so references, regions and distances are real, then call `check`. Never ask the user to pick criterion types.
-- `set_goal` takes a short `summary` (their intent, in their words where possible) and `criteria` from: drc_errors, drc_warnings, unconnected, board_size (max_w/max_h), edge_clearance (min_mm), max_distance/min_distance (a, b, max_mm/min_mm), within_region (ref, region [x1,y1,x2,y2]), open_threads (max, optional severities).
+- `set_goal` takes a short `summary` (their intent, in their words where possible) and `criteria` from: drc_errors, drc_warnings, unconnected, board_size (max_w/max_h), edge_clearance (min_mm), max_distance/min_distance (a, b, max_mm/min_mm), within_region (ref, region [x1,y1,x2,y2]), open_threads (max, optional severities), schematic_legibility (max).
 
 Phases:
 - A design starts in the SCHEMATIC phase: there is no board yet, only `schematic.kicad_sch`. Draw the circuit, keep ERC clean (erc_errors/erc_warnings criteria), then call `start_board_layout`. That creates the board, places the footprints from KiCad's own netlist and assigns their nets, so layout starts electrically correct. After it, you are in the BOARD phase and move parts and route.
 - Prefer `generate_schematic_skidl` to draw a whole design from a parts and nets list; use the individual symbol and wiring tools to fix or extend it. Every part needs a real KiCad footprint (`Library:Footprint`) or it cannot be placed on the board.
+- A schematic is not finished when it is merely ERC-clean: it must be readable. Call `check_schematic_layout` after drawing or editing; while it reports a score above 0, call `tidy_schematic` and check again. The [legible] goal criterion is measured from the drawing itself and is mandatory, so the loop will not end until it passes.
 
 Part sourcing (do this before choosing parts):
 - Boards are assembled by JLCPCB, so a part is only real if JLCPCB stocks it. Use `find_parts` to search their catalogue: pass `query` for a part number (e.g. "NE555" finds NE555DR) or `category` to browse by type (e.g. "LED", "Relays"). It reports stock, unit price, and whether a part is `basic` (no assembly fee) or `extended` (a per-part reel fee). Prefer basic parts with large stock unless the user asks otherwise. The catalogue's description text is empty, so searching for words like "red LED" will not work — browse the category instead.
@@ -660,7 +680,7 @@ How to work:
 never guess coordinates from an image alone.
 2. Edit with the editing tools. Every successful edit is committed as a new version the user can see and roll back, \
 so prefer a few deliberate edits over many tiny ones.
-3. Verify after edits: call check (DRC plus the goal criteria). Look at the result visually with render_view, zoomed \
+3. Verify after edits: call check (DRC plus the goal criteria) and, for the schematic, check_schematic_layout. Look at the result visually with render_view, zoomed \
 on whatever you changed (pass target, view_mm and highlight). Tracks under solder mask are easier to judge in 2D than 3D.
 4. Routing: after moving parts, rip up the affected tracks (delete_tracks) and call autoroute rather than drawing \
 long routes by hand; hand-route only short or critical connections.
@@ -1248,11 +1268,18 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         except Exception as exc:  # ERC failing must not hide the schematic itself
             counts = {"errors": None, "warnings": None}
             violations = [{"error": _engine_error_text(exc)}]
+        from kicad_harness.engine import layout as layout_mod
+
+        try:
+            layout_report = layout_mod.analyze(doc)
+        except Exception as exc:  # measurement must not hide the schematic itself
+            layout_report = {"ok": False, "score": None, "error": _engine_error_text(exc)}
         summary = {
             "design": ctx.deps.state.design,
             "phase": ws.phase(),
             "brief": ws.brief(),
             "paper": index["paper"],
+            "layout": layout_report,
             "symbols": index["symbols"],
             "nets": index["nets"],
             "wires": index["wires"],
@@ -1444,8 +1471,37 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return await _schematic_commit(ctx, "generate_schematic_skidl", f"Draw the schematic with skidl ({len(validated_parts)} parts)", payload)
 
     @agent.tool
+    async def check_schematic_layout(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
+        """Measure whether the schematic is legible: overlapping symbols or net labels, wires
+        running through parts, dangling wire ends, anything off the sheet. Returns a score (0 is
+        legible), per-fault counts and the worst violations. The goal's mandatory [legible]
+        criterion uses the same measurement, so the run cannot finish while it is above 0."""
+        from kicad_harness.engine import layout as layout_mod
+
+        try:
+            doc = await asyncio.to_thread(_schematic, ctx)
+            report = await asyncio.to_thread(layout_mod.analyze, doc)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        await _sync_schematic_state(ctx)
+        return ToolReturn(return_value=report, metadata=[_snapshot(ctx.deps.state)])
+
+    @agent.tool(sequential=True)
+    async def tidy_schematic(ctx: RunContext[HarnessDeps], paper: str | None = None) -> ToolReturn:
+        """Relayout the schematic into a legible grid: every symbol on a grid, one short stub and
+        one net label per pin, no long wires and no crossings. Connectivity is preserved (labels
+        with the same net name merge), so the netlist does not change. Returns the before/after
+        measurements; call check_schematic_layout afterwards to confirm the score is 0."""
+        from kicad_harness.engine import layout as layout_mod
+
+        return await _schematic_edit(
+            ctx, "tidy_schematic", "Tidy the schematic layout",
+            lambda doc: layout_mod.tidy(doc, paper=paper),
+        )
+
+    @agent.tool
     async def check_schematic(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
-        """Run ERC on the working schematic and evaluate the goal against it."""
+        """Run ERC and the legibility check on the working schematic, and evaluate the goal."""
         return ToolReturn(return_value=await _evaluate(ctx), metadata=[_snapshot(ctx.deps.state)])
 
     @agent.tool(sequential=True)

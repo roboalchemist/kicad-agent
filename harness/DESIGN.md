@@ -290,6 +290,38 @@ Messages with no `run_id` go to whichever run asks first, which is the next run 
 ```
 The default goal is `drc` + `routed` + `review`.
 
+Beyond what the agent authors, a **baseline floor** is always appended with strict values: ERC
+errors 0, DRC errors 0, unconnected 0, schematic/board parity, BOM↔schematic↔board sync, the
+stated requirements, and schematic legibility 0. The floor replaces any same-id or same-type
+criterion in `goal.json`, so raising a limit there has no effect.
+
+### Schematic legibility (`engine/layout.py`)
+
+ERC says a schematic is correct; it does not say it is readable. `layout.analyze(doc)` measures
+the drawing itself and returns a `score` plus per-fault `counts`:
+
+| fault | meaning |
+|---|---|
+| `symbol_overlaps` | two symbol bodies share area |
+| `label_overlaps` | a net label covers another label or a foreign symbol body |
+| `wires_through_symbols` | a wire crosses a part it does not connect to |
+| `dangling_wires` | a wire end touches nothing (no pin/label/junction/wire) |
+| `off_sheet` | an object lies outside the page |
+| `wire_crossings` | (reported, not scored) two wires cross in mid-air |
+
+`score` is the sum of the first five. The `[legible]` baseline criterion requires 0 and fails
+explicitly when the schematic could not be measured (`schematic_layout: null`), so an unmeasured
+sheet never looks like a passing one.
+
+`layout.tidy(doc)` rewrites the sheet as a grid: every symbol placed in a cell sized from the
+largest symbol and the longest net name, then one short stub and one net label per pin, with the
+label steered to a free spot. That style has no long wires and no crossings by construction. It
+preserves connectivity because KiCad merges labels with the same name; `tidy` records the
+existing net of every pin (including `PWR_FLAG`s, whose value is not a net name) before deleting
+the old wires and labels. Unconnected pins get a `no_connect` marker, and the sheet is moved to
+the smallest paper size the grid fits. The agent reaches it through `check_schematic_layout` and
+`tidy_schematic`; the goal loop keeps running until `[legible]` passes.
+
 `evaluate(goal, index, drc, threads) -> {"met": bool, "criteria": [{"id", "type", "passed", "value", "detail"}]}`.
 
 ## Agent (`agent/agent.py`)
