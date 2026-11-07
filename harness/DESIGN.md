@@ -313,13 +313,30 @@ the drawing itself and returns a `score` plus per-fault `counts`:
 explicitly when the schematic could not be measured (`schematic_layout: null`), so an unmeasured
 sheet never looks like a passing one.
 
-`layout.tidy(doc)` rewrites the sheet as a grid: every symbol placed in a cell sized from the
-largest symbol and the longest net name, then one short stub and one net label per pin, with the
-label steered to a free spot. That style has no long wires and no crossings by construction. It
-preserves connectivity because KiCad merges labels with the same name; `tidy` records the
-existing net of every pin (including `PWR_FLAG`s, whose value is not a net name) before deleting
-the old wires and labels. Unconnected pins get a `no_connect` marker, and the sheet is moved to
-the smallest paper size the grid fits. The agent reaches it through `check_schematic_layout` and
+`layout.tidy(doc)` rewrites the sheet as a **circuit flow**, not a part-type grid:
+
+- The netlist is read first (before anything is deleted). Rails (+5V, GND, VBUS, VINBUCK, P20V,
+  3V3, or any net fanning out to a third of the design) are separated from signals, so a supply
+  rail cannot collapse the whole design into one layer.
+- The component with the most signal neighbours is the hub (the controller). Signal islands are
+  traversed breadth-first: each hop is a stage, left to right.
+- Within a stage, parts are ordered by the barycentre of their neighbours in the previous stage,
+  so a relay lines up with the driver output feeding it and with the terminal block on its
+  contacts — each channel reads across the sheet.
+- The supply island (input connector/fuse, regulator, switching passives, bulk capacitors) is
+  laid out as its own input-to-output block before the controller; parts that touch only rails
+  (decoupling caps, the 5 V outlet) join it. Power symbols are only net-name carriers and go in
+  a compact legend strip at the foot of the sheet.
+- Every pin then gets one short stub and one net label, steered to a free spot. That has no long
+  wires and no crossings by construction, and KiCad merges labels with the same name, so
+  connectivity is preserved. `tidy` records each pin's existing net (including `PWR_FLAG`s,
+  whose value is not a net name) before deleting the old wires and labels; unconnected pins get a
+  `no_connect` marker.
+- The page is cropped to the drawing (`paper "User"` plus a band for KiCad's title block) instead
+  of leaving most of an A1/A0 sheet blank; callers can pass a standard paper size.
+
+Spacing is retried at 1.0/1.25/1.6/2.1 until `analyze()` reports 0, so the layout is as tight as
+it can be while passing. The agent reaches it through `check_schematic_layout` and
 `tidy_schematic`; the goal loop keeps running until `[legible]` passes.
 
 `evaluate(goal, index, drc, threads) -> {"met": bool, "criteria": [{"id", "type", "passed", "value", "detail"}]}`.

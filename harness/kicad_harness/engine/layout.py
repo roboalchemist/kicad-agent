@@ -26,9 +26,11 @@ because KiCad merges labels by name it preserves the connectivity the sheet alre
 from __future__ import annotations
 
 import math
+import re
+from collections import deque
 from typing import Any, Iterable
 
-from .schematic import PAPER, Schematic, find_all, find_one
+from .schematic import PAPER, POWER_NETS, Schematic, find_all, find_one, num
 
 MARGIN = 10.0          # sheet border left free around the grid
 GAP = 4.0              # clear space between neighbouring symbol boxes
@@ -38,6 +40,7 @@ CHAR_W = 1.15          # rough advance of a 1.27 mm KiCad character
 MIN_LABEL_W = 9.0
 MAX_LABEL_W = 30.0
 PAPERS = ["A4", "A3", "A2", "A1", "A0"]
+TITLE_BAND = 65.0      # room at the foot of a cropped sheet for KiCad's title block
 
 
 # ---------------------------------------------------------------------------------------------
@@ -407,35 +410,103 @@ def _pin_sides(doc: Schematic, placement, symbol) -> dict[str, bool]:
     return need
 
 
-def _flow_rows(
-    sizes: dict[str, tuple[float, float]],
-    extras: dict[str, dict[str, float]],
-    order: list[str],
-    page_w: float,
-    gap: float,
-) -> tuple[list[dict[str, Any]], float]:
-    """Pack symbols left to right into rows, returning the rows and the height they need."""
-    rows: list[dict[str, Any]] = []
-    row: dict[str, Any] = {"refs": [], "h": 0.0, "top": 0.0, "bottom": 0.0, "start": 0.0}
-    x = MARGIN
-    for ref in order:
-        width, height = sizes[ref]
-        extra = extras[ref]
-        slot = extra["left"] + width + extra["right"] + gap
-        if row["refs"] and x + slot > page_w - MARGIN:
-            rows.append(row)
-            row = {"refs": [], "h": 0.0, "top": 0.0, "bottom": 0.0, "start": 0.0}
-            x = MARGIN
-        if not row["refs"]:
-            row["start"] = x
-        row["refs"].append(ref)
-        row["h"] = max(row["h"], height)
-        row["top"] = max(row["top"], extra["top"])
-        row["bottom"] = max(row["bottom"], extra["bottom"])
-        x += slot
-    rows.append(row)
-    height = 2 * MARGIN + sum(r["top"] + r["h"] + r["bottom"] + gap for r in rows)
-    return rows, height
+_RAIL_NAME = re.compile(r"^(P\d+V\d*|\d+V\d*|VIN.*|VOUT.*|VBAT.*|VREF.*)$", re.IGNORECASE)
+
+
+def _is_rail(name: str, fanout: int, total: int) -> bool:
+    """A supply rail is not a signal: it must not pull the whole sheet into one layer.
+
+    Named rails (+5V, GND, VBUS, VINBUCK, P20V, 3V3) and any net that fans out to a third of the
+    design are treated as rails; everything else is signal and drives the left-to-right flow.
+    """
+    upper = (name or "").strip().upper()
+    if not upper:
+        return True
+    if upper in POWER_NETS or upper.startswith(("+", "-", "GND", "VCC", "VDD", "VSS", "VBUS")):
+        return True
+    if _RAIL_NAME.match(upper):
+        return True
+    return total > 0 and fanout >= max(8, 0.35 * total)
+
+
+def _graph(doc: Schematic) -> tuple[list[str], dict[str, set[str]], dict[str, set[str]]]:
+    """``(components, signal adjacency, rail adjacency)`` from the schematic's own nets."""
+    comps = [p.reference for p in doc.placements() if not p.reference.startswith("#")]
+    nets = doc.nets()
+    signal = {ref: set() for ref in comps}
+    rails = {ref: set() for ref in comps}
+    for name, members in nets.items():
+        refs = {m["ref"] for m in members if not m["ref"].startswith("#") and m["ref"] in signal}
+        if len(refs) < 2:
+            continue
+        target = rails if _is_rail(name, len(refs), len(comps)) else signal
+        for ref in refs:
+            target[ref].update(refs - {ref})
+    return comps, signal, rails
+
+
+def _islands(comps: list[str], signal: dict[str, set[str]]) -> tuple[list[list[str]], list[str]]:
+    """Connected groups of parts that share signals, plus the parts that share no signal at all."""
+    seen: set[str] = set()
+    islands: list[list[str]] = []
+    for ref in sorted(comps, key=_natural_key):
+        if ref in seen or not signal[ref]:
+            continue
+        group: list[str] = []
+        stack = [ref]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            group.append(current)
+            stack.extend(sorted(signal[current] - seen, key=_natural_key))
+        islands.append(sorted(group, key=_natural_key))
+    loose = [ref for ref in comps if ref not in seen]
+    return islands, loose
+
+
+def _bfs_depth(start: str, adj: dict[str, set[str]]) -> dict[str, int]:
+    depth = {start: 0}
+    queue = deque([start])
+    while queue:
+        current = queue.popleft()
+        for neighbour in sorted(adj.get(current, ()) , key=_natural_key):
+            if neighbour not in depth:
+                depth[neighbour] = depth[current] + 1
+                queue.append(neighbour)
+    return depth
+
+
+def _order_layers(depth: dict[str, int], adj: dict[str, set[str]]) -> list[list[str]]:
+    """Layers left-to-right, ordered by the barycentre of each part's neighbours.
+
+    A part sits opposite the parts it connects to, so a relay lines up with the driver output
+    that feeds it and with the terminal block on its contacts — the channel reads across the
+    sheet instead of zig-zagging.
+    """
+    layers: dict[int, list[str]] = {}
+    for ref, level in depth.items():
+        layers.setdefault(level, []).append(ref)
+    ordered = [sorted(layers[level], key=_natural_key) for level in sorted(layers)]
+
+    def sweep(forward: bool) -> None:
+        indices = [{ref: i for i, ref in enumerate(layer)} for layer in ordered]
+        order = range(1, len(ordered)) if forward else range(len(ordered) - 2, -1, -1)
+        for level in order:
+            reference = indices[level - 1 if forward else level + 1]
+
+            def barycentre(ref: str) -> tuple[float, tuple]:
+                seen = [reference[other] for other in adj.get(ref, ()) if other in reference]
+                middle = sum(seen) / len(seen) if seen else float("inf")
+                return middle, _natural_key(ref)
+
+            ordered[level] = sorted(ordered[level], key=barycentre)
+            indices[level] = {ref: i for i, ref in enumerate(ordered[level])}
+
+    sweep(True)
+    sweep(False)
+    return ordered
 
 
 def _lay_out(
@@ -447,7 +518,23 @@ def _lay_out(
     scale: float,
     paper: str | None,
 ) -> dict[str, Any]:
-    """One layout attempt at a given spacing scale. Leaves the document laid out."""
+    """One circuit-flow layout attempt at a given spacing scale. Leaves the document laid out."""
+    # The netlist must be read *before* the drawing is cleared: connectivity comes from the old
+    # wires and labels. Clearing first made every part look isolated and collapsed the sheet
+    # into one 95-symbol column.
+    comps, signal, rails = _graph(doc)
+    islands, loose = _islands(comps, signal)
+    islands.sort(key=len, reverse=True)
+    main = islands[0] if islands else []
+    hub = max(main, key=lambda ref: (len(signal[ref]), _natural_key(ref))) if main else None
+
+    def layer_columns(group: list[str]) -> list[list[str]]:
+        if not group:
+            return []
+        root = hub if group is main and hub else max(
+            group, key=lambda ref: (len(signal[ref]), _natural_key(ref)))
+        return _order_layers(_bfs_depth(root, signal), signal)
+
     # Clear the drawing but keep the symbols and their library geometry.
     for head in ("wire", "label", "global_label", "junction", "no_connect"):
         doc.tree[:] = [child for child in doc.tree
@@ -456,15 +543,11 @@ def _lay_out(
     placements = sorted(doc.placements(), key=lambda p: _natural_key(p.reference))
     boxes = symbol_boxes(doc)
     sizes = {ref: (box[2] - box[0], box[3] - box[1]) for ref, box in boxes.items()}
-    order = [p.reference for p in placements]
 
     horizontal = (STUB + label_w) * scale
     vertical = (STUB + TEXT_H / 2 + 0.6) * scale
     small = 1.6 * scale
     gap = GAP * scale
-    # Only a side that actually has pins reserves room for their labels. A GND symbol with one
-    # pin pointing down needs no horizontal label space at all; giving it the same slot as a
-    # connector was half of why the sheet looked empty.
     extras: dict[str, dict[str, float]] = {}
     for placement in placements:
         symbol = doc.lookup(placement.lib_id)
@@ -476,34 +559,95 @@ def _lay_out(
             "bottom": vertical if need.get("bottom") else small,
         }
 
-    # Smallest page the packed flow fits, so a small design is not printed on A1.
-    chosen = paper or "A0"
-    rows: list[dict[str, Any]] = []
-    height = 0.0
-    for candidate_paper in ([paper] if paper else PAPERS):
-        page_w, page_h = PAPER[candidate_paper]
-        rows, height = _flow_rows(sizes, extras, order, page_w, gap)
-        if height <= page_h:
-            chosen = candidate_paper
-            break
-    else:
-        page_w, page_h = PAPER["A0"]
-        rows, height = _flow_rows(sizes, extras, order, page_w, gap)
-    if chosen != _paper(doc)[0]:
-        node = find_one(doc.tree, "paper")
-        if node is not None:
-            node[1] = chosen
+    # ---- circuit flow: controller at the centre of the signal graph, then each stage outward
+    supply_islands = [group for group in islands[1:]]
+    columns: list[list[str]] = []
+    # Power symbols only name nets; they are not parts on the signal path, so they go in a
+    # compact legend strip under the drawing instead of a tall column that dominates the sheet.
+    power_refs = sorted(
+        (p.reference for p in placements if p.reference.startswith("#")),
+        key=lambda ref: (next(p.value for p in placements if p.reference == ref),
+                         _natural_key(ref)),
+    )
+    # Supply block, reading input to output: connectors and fuses first, then the regulator and
+    # the parts around its switching node, then the bulk/decoupling capacitors. None of these
+    # share a signal with the controller, so they cannot be placed by the flow itself.
+    def is_input_end(ref: str) -> bool:
+        return ref[:1] in ("J", "F", "B")  # connectors, fuses, bridges
 
-    # Place each symbol's bbox in the slot its own extents and labels need.
-    y = MARGIN
-    for row in rows:
-        x = row["start"]
-        for ref in row["refs"]:
-            width, _height = sizes[ref]
+    loose_input = [ref for ref in loose if is_input_end(ref)]
+    loose_rest = [ref for ref in loose if not is_input_end(ref)]
+    supply_columns: list[list[str]] = []
+    if loose_input:
+        supply_columns.append(loose_input)
+    for group in sorted(supply_islands, key=lambda g: _natural_key(min(g, key=_natural_key))):
+        supply_columns.extend(layer_columns(group))
+    if loose_rest:
+        supply_columns.append(loose_rest)
+    columns.extend(supply_columns)
+    if main:
+        columns.extend(layer_columns(main))
+
+    total_cols = len(columns)
+
+    def slot_width(ref: str) -> float:
+        return extras[ref]["left"] + sizes[ref][0] + extras[ref]["right"]
+
+    def slot_height(ref: str) -> float:
+        return extras[ref]["top"] + sizes[ref][1] + extras[ref]["bottom"]
+
+    flow_width = sum(
+        max(slot_width(ref) for ref in col) + gap for col in columns
+    ) - gap if columns else 0.0
+    flow_height = max(
+        sum(slot_height(ref) + gap for ref in col) - gap for col in columns
+    ) if columns else 0.0
+
+    # Power-symbol legend: rows under the flow, as many per row as the flow is wide.
+    per_row = max(1, min(12, int((flow_width + gap) // (min(
+        (slot_width(ref) for ref in power_refs), default=10.0) + gap)) if flow_width else 8))
+    power_rows: list[list[str]] = [
+        power_refs[i:i + per_row] for i in range(0, len(power_refs), per_row)
+    ]
+    legend_width = max(
+        (sum(slot_width(ref) + gap for ref in row) - gap for row in power_rows), default=0.0
+    )
+    legend_height = sum(
+        (max(slot_height(ref) for ref in row) + gap if row else 0.0) for row in power_rows
+    )
+
+    width = max(flow_width, legend_width) + 2 * MARGIN
+    height = flow_height + (gap + legend_height if power_rows else 0.0) + 2 * MARGIN
+
+    # Prefer a standard sheet. When the drawing would leave a standard sheet mostly empty,
+    # crop the page to the drawing instead: a custom "User" sheet the size of the content, with
+    # a band at the foot reserved for KiCad's title block.
+    chosen: str | None = None
+    node = find_one(doc.tree, "paper")
+    if paper:
+        chosen = paper
+        if node is not None and node[1] != chosen:
+            node[:] = ["paper", chosen]
+    else:
+        # Crop the page to the drawing. A standard A1/A0 left three-quarters of the sheet
+        # blank for this design; a custom sheet ends where the circuit ends.
+        chosen = "User"
+        if node is not None:
+            node[:] = ["paper", "User", num(width), num(height + TITLE_BAND)]
+
+    # Lay the columns out left to right, each stacked from the same top edge so the stages line
+    # up row for row.
+    x = MARGIN
+    for column in columns:
+        y = MARGIN
+        col_width = max(extras[ref]["left"] + sizes[ref][0] + extras[ref]["right"]
+                        for ref in column)
+        for ref in column:
             box = boxes[ref]
+            width_, height_ = sizes[ref]
             extra = extras[ref]
-            target_x = x + extra["left"] + width / 2
-            target_y = y + row["top"] + row["h"] / 2
+            target_x = x + extra["left"] + width_ / 2
+            target_y = y + extra["top"] + height_ / 2
             placement = next(p for p in placements if p.reference == ref)
             doc.move_symbol(
                 ref,
@@ -511,8 +655,27 @@ def _lay_out(
                 placement.y + target_y - (box[1] + box[3]) / 2,
                 rotation=0,
             )
-            x += extra["left"] + width + extra["right"] + gap
-        y += row["top"] + row["h"] + row["bottom"] + gap
+            y += extra["top"] + height_ + extra["bottom"] + gap
+        x += col_width + gap
+
+    # Power-symbol legend under the flow.
+    legend_y = MARGIN + flow_height + gap
+    for row in power_rows:
+        row_height = max(slot_height(ref) for ref in row)
+        legend_x = MARGIN
+        for ref in row:
+            box = boxes[ref]
+            width_, height_ = sizes[ref]
+            extra = extras[ref]
+            placement = next(p for p in placements if p.reference == ref)
+            doc.move_symbol(
+                ref,
+                placement.x + (legend_x + extra["left"] + width_ / 2) - (box[0] + box[2]) / 2,
+                placement.y + (legend_y + extra["top"] + height_ / 2) - (box[1] + box[3]) / 2,
+                rotation=0,
+            )
+            legend_x += slot_width(ref) + gap
+        legend_y += row_height + gap
 
     # Re-read the placements: ``move_symbol`` changed the file, and pin positions must be
     # measured from where the symbols are *now*, not from the pre-move snapshot.
@@ -582,10 +745,10 @@ def _lay_out(
 
     return {
         "paper": chosen,
-        "rows": len(rows),
+        "columns": total_cols,
+        "stages": [len(col) for col in columns],
         "spacing_scale": scale,
-        "sheet_mm": [round(PAPER.get(chosen, PAPER["A4"])[0], 1),
-                     round(PAPER.get(chosen, PAPER["A4"])[1], 1)],
+        "sheet_mm": [round(_paper(doc)[1][0], 1), round(_paper(doc)[1][1], 1)],
         "symbols": len(placements),
         "stubs": stubs,
         "labels": labels,
