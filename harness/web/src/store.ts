@@ -46,6 +46,18 @@ export const BOARD_LAYERS: Record<"front" | "back", BoardLayer[]> = {
   ],
 };
 
+/** The layer panel's groups: every layer of *both* sides, with the shared board outline once.
+ *
+ * KiCad lists all layers in one panel whatever side is being looked at, so a layer can be hidden
+ * before switching to it; the current side's group is marked so it is clear which one the view
+ * is showing.
+ */
+export const LAYER_PANEL_GROUPS: { title: string; side: "front" | "back" | null; layers: BoardLayer[] }[] = [
+  { title: "Front", side: "front", layers: BOARD_LAYERS.front.filter((l) => l.id !== "Edge.Cuts") },
+  { title: "Back", side: "back", layers: BOARD_LAYERS.back.filter((l) => l.id !== "Edge.Cuts") },
+  { title: "Board", side: null, layers: BOARD_LAYERS.front.filter((l) => l.id === "Edge.Cuts") },
+];
+
 
 /** The entity the user picked in the viewer (an anchor in the making). */
 export interface Pick {

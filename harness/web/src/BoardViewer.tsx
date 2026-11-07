@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.ts";
 import {
   BOARD_LAYERS,
+  LAYER_PANEL_GROUPS,
   boardToSvg,
   fitView,
   getStore,
@@ -438,7 +439,7 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
         {side !== "3d" && <ScaleLegend scale={scale} gridStep={gridStep} barMM={barMM} />}
         {side !== "3d" && (
           <LayerPanel
-            layers={sideLayers}
+            side={side === "back" ? "back" : "front"}
             hidden={h.hiddenLayers}
             onToggle={toggleLayer}
             onShowAll={showAllLayers}
@@ -785,45 +786,57 @@ function PickPopover() {
  * choosing a whole side.
  */
 function LayerPanel({
-  layers,
+  side,
   hidden,
   onToggle,
   onShowAll,
 }: {
-  layers: typeof BOARD_LAYERS.front;
+  side: "front" | "back";
   hidden: string[];
   onToggle: (layer: string) => void;
   onShowAll: () => void;
 }) {
-  const hiddenCount = hidden.length;
   return (
     <div className="layer-panel" data-testid="layer-panel">
       <div className="layer-panel-head">
         <span>Layers</span>
-        <button className="link" onClick={onShowAll} disabled={hiddenCount === 0} data-testid="layers-show-all">
+        <button className="link" onClick={onShowAll} disabled={hidden.length === 0} data-testid="layers-show-all">
           show all
         </button>
       </div>
-      {layers.map((layer) => {
-        const on = !hidden.includes(layer.id);
-        return (
-          <label
-            key={layer.id}
-            className={`layer-row ${on ? "" : "off"}`}
-            data-testid={`layer-row-${layer.id}`}
-            title={`${on ? "Hide" : "Show"} ${layer.label}`}
+      {/* Both sides are listed: a layer can be hidden before switching to it, as in KiCad. */}
+      {LAYER_PANEL_GROUPS.map((group) => (
+        <div className="layer-group" key={group.title}>
+          <div
+            className={`layer-group-head ${group.side === side ? "current" : ""}`}
+            data-testid={`layer-group-${group.side ?? "board"}`}
           >
-            <input
-              type="checkbox"
-              checked={on}
-              onChange={() => onToggle(layer.id)}
-              data-testid={`layer-toggle-${layer.id}`}
-            />
-            <span className="layer-swatch" style={{ background: layer.color }} aria-hidden="true" />
-            <span className="layer-name">{layer.label}</span>
-          </label>
-        );
-      })}
+            {group.title}
+            {group.side === side && <span className="layer-group-current">shown</span>}
+          </div>
+          {group.layers.map((layer) => {
+            const on = !hidden.includes(layer.id);
+            const otherSide = group.side !== null && group.side !== side;
+            return (
+              <label
+                key={layer.id}
+                className={`layer-row ${on ? "" : "off"}`}
+                data-testid={`layer-row-${layer.id}`}
+                title={`${on ? "Hide" : "Show"} ${layer.label}${otherSide ? " (takes effect on the " + group.title.toLowerCase() + " view)" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={() => onToggle(layer.id)}
+                  data-testid={`layer-toggle-${layer.id}`}
+                />
+                <span className="layer-swatch" style={{ background: layer.color }} aria-hidden="true" />
+                <span className="layer-name">{layer.label}</span>
+              </label>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }

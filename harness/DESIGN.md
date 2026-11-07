@@ -416,8 +416,11 @@ The UI therefore updates live even while a headless CLI run edits the design fro
   - Shows `GET .../rev/{rev}/svg/{side}` as a background (an inline SVG or `<img>` sized in mm).
   - Layers are plotted one at a time (`/svg/{side}?layers=F.Cu`), cached per board hash and layer
     subset, and stacked bottom-to-top in the browser. A KiCad-style panel on the right of the
-    board area toggles each layer (persisted); hidden layers are not painted and their entities
-    are not pickable. `?tab=bom|schematic|board` in the page URL selects the main section.
+    board area lists the layers of *both* sides (F.Cu/F.Mask/F.SilkS, B.Cu/B.Mask/B.SilkS, and
+    the shared Edge.Cuts) and toggles each one (persisted); hidden layers are not painted and
+    their entities are not pickable. Toggling a layer never flips the view — only the Front/Back
+    buttons do, and a layer hidden for the other side takes effect when you flip to it.
+    `?tab=bom|schematic|board` in the page URL selects the main section.
   - Draws an overlay `<svg>` in the same mm coordinate system, built from `GET .../rev/{rev}/index`:
     - footprints: bbox rects, visually invisible;
     - pads: their polygons;

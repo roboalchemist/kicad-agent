@@ -1078,6 +1078,36 @@ button.stop-btn {
   letter-spacing: 0.06em;
   font-size: 10px;
 }
+.layer-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 4px;
+}
+.layer-group + .layer-group {
+  margin-top: 3px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+.layer-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 1px;
+  color: #7f90a4;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.layer-group-head.current {
+  color: #cfe2ff;
+}
+.layer-group-current {
+  color: #2f6feb;
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0;
+}
 .layer-row {
   display: flex;
   align-items: center;
