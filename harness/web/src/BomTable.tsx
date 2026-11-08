@@ -183,7 +183,7 @@ export function BomTable({ design }: { design: string }) {
                   <td colSpan={9}>
                     {bom.unpriced_qty} part{bom.unpriced_qty === 1 ? "" : "s"} have no supplier part
                     number yet, so they are not in the total. Record an LCSC code per part (the agent
-                    does this when it sources parts with find_parts / check_part) and the part number,
+                    does this when it sources parts with find_parts) and the part number,
                     link and price fill in.
                   </td>
                 </tr>

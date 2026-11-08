@@ -9,7 +9,7 @@ right shape for the work the rules describe".
 
 | Category | Count (approx.) | Examples |
 |---|---|---|
-| Sufficient | 24 | find_parts / check_part / part_datasheet; set_goal / check; tidy_schematic / route_schematic / check_schematic_layout; render_view / render_schematic; review trio; versions |
+| Sufficient | 24 | find_parts / check_part / read_part_datasheet; set_goal / check; tidy_schematic / route_schematic / check_schematic_layout; render_view / render_schematic; review trio; versions |
 | Overlapping (merge) | 14 | part_categories→find_parts; delete_items→delete_tracks; check_schematic + check_schematic_layout + check; label_pin + add_schematic_label; render_view + render_schematic |
 | Overkill / risky | 5 | set_pad_net, delete_items, move_reference_text, draw_schematic_wires, add_schematic_text |
 | Missing capabilities | 12 areas | net classes, stackup, differential pairs, mechanical outline import, manufacturing export, BOM alternates/lifecycle, silkscreen automation, test points, thermal, keepouts, via types, knowledge search |
@@ -26,7 +26,7 @@ back (manufacturing/test) are largely absent.
 | Deleting board items | `delete_tracks`, `delete_items`, `remove_footprint` | three ways to remove copper; UUIDs are hard for a model to obtain and reuse | One `delete(kind=track|via|zone|footprint, nets|refs|uuids)`; keep `remove_footprint` for schematic parity only |
 | Attaching a net | `connect_pins`, `label_pin`, `add_schematic_label` | three verbs for pin↔pin, pin↔net, net-at-point | Keep `connect_pins`; merge the other two into `label_net(target, net)` where target is a pin or a point |
 | Checking | `check`, `check_schematic`, `check_schematic_layout` | `check_schematic` only evaluates goal criteria while `check_schematic_layout` returns the real report + image; naming promises the same thing | One phase-aware `check`: ERC/DRC counts, criteria, findings, image; `detail` level for the full report |
-| Summaries | `design_summary`, `schematic_summary`, `query` | `design_summary` delegates to `schematic_summary` in the schematic phase | Keep; document the delegation and make return shapes consistent |
+| Summaries | `get_design`, `schematic_summary`, `query` | `get_design` delegates to `schematic_summary` in the schematic phase | Keep; document the delegation and make return shapes consistent |
 | Rendering | `render_view`, `render_schematic` | same "look at it" action for two objects | One `render(kind=board|schematic, …)` |
 | Wiring the sheet | `draw_schematic_wires`, `tidy_schematic`, `route_schematic` | `draw_schematic_wires` is a legacy stub fixer; tidy already draws stubs and route draws real wires | Fold into `tidy_schematic` |
 | Schematic repair | `disconnect_schematic`, `remove_symbol`, `set_symbol_value` | all can remove/rename connectivity | Keep `remove_symbol`; fold net clearing into a selector on `disconnect_schematic` |
@@ -48,7 +48,7 @@ back (manufacturing/test) are largely absent.
 ## 3. Sufficient
 
 - **Sourcing**: `find_parts` (stock/price/tier/category), `check_part` (stock + datasheet),
-  `part_datasheet` — grounded in the catalogue, not guesses.
+  `read_part_datasheet` — grounded in the catalogue, not guesses.
 - **Goal loop**: `set_goal` + the mandatory criteria (ERC, legible, DRC, routing, parity, sync,
   brief) — this is the strongest part of the harness; it cannot be talked out of.
 - **Schematic quality**: `tidy_schematic` (owner placement + pin alignment), `route_schematic`
@@ -56,8 +56,8 @@ back (manufacturing/test) are largely absent.
   562 violations to 0 with 34/34 routed nets.
 - **Board editing for simple boards**: move/rotate/flip, `add_track`/`add_via`, zones + refill,
   `autoroute`, `measure`, `query` — enough for the 2-layer relay board.
-- **Review loop**: `list_feedback`, `reply_to_thread`, `mark_addressed`; versions list/restore.
-- **Knowledge**: `read_design_reference` + the cited digest.
+- **Review loop**: `list_reviews`, `reply_review`, `mark_review_addressed`; versions list/restore.
+- **Knowledge**: `read_reference` + the cited digest.
 
 ## 4. Insufficient (rules demand it; no tool)
 
@@ -87,11 +87,11 @@ back (manufacturing/test) are largely absent.
   renumber/annotate, no variants/DNP.
 - **Version management** (`pcb-version-control#Revision Numbering Schemes`): no tags, release
   notes, or netlist diff.
-- **Knowledge search** (`read_design_reference`): lookup by id only; no query across 229 sections.
+- **Knowledge search** (`read_reference`): lookup by id only; no query across 229 sections.
 
 ### Weak spots in existing tools
 
-- `generate_schematic_skidl`: one agent run reported it failing on the skidl pickle cache
+- `generate_schematic`: one agent run reported it failing on the skidl pickle cache
   ("Read-only file system"). The directory is writable now, but the failure needs a regression
   test or a replacement path — a whole-design tool that can fail silently is a liability.
 - `route_schematic`: only nets with exactly two pins; buses (3+ pins) always fall back to labels.
@@ -117,3 +117,24 @@ render_schematic (into render), set_pad_net, move_reference_text, add_schematic_
    path and it failed once.
 3. **Add net classes + stackup + manufacturing export** — the three places where the rules
    describe a workflow the harness cannot execute at all.
+
+## Applied after this review
+
+The five overkill tools were removed (`set_pad_net`, `delete_items`,
+`move_reference_text`, `draw_schematic_wires`, `add_schematic_text`) and the duplicate clusters
+were merged. The agent surface is now **36 tools**, all named `<verb>_<object>`:
+
+- sourcing: `find_parts` absorbs `part_categories` and `check_part` (`categories=True`,
+  `mpn`/`lcsc`); `read_part_datasheet` stays.
+- schematic: `label_net` absorbs `label_pin` + `add_schematic_label`;
+  `delete_schematic_items` absorbs `disconnect_schematic` + `remove_symbol`;
+  `move_symbol`, `generate_schematic`, `start_board` replace the phase-suffixed names;
+  `schematic_summary` is folded into `get_design`.
+- checks: `check(detail=False)` is phase-aware and replaces `check` + `check_schematic` +
+  `check_schematic_layout`; `render(kind=...)` replaces `render_view` + `render_schematic`.
+- board: `delete_board_items(nets, refs, uuids)` replaces `delete_tracks` + `remove_footprint`.
+- review: `list_reviews` / `reply_review` / `mark_review_addressed`.
+
+Still open: the capability gaps in section 4 (net classes, stackup, differential pairs,
+outline import, manufacturing export, BOM lifecycle, silkscreen automation, test points,
+thermal), plus knowledge search.

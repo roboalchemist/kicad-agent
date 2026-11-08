@@ -23,7 +23,7 @@ async def test_settings_lists_every_tool_with_a_level_and_guidance(services) -> 
     levels = {item["id"] for item in body["levels"]}
     assert {"global", "bom", "schematic", "board"} <= levels
     tools = body["tools"]
-    assert len(tools) >= 40, f"only {len(tools)} tools listed"
+    assert len(tools) >= 30, f"only {len(tools)} tools listed"
     for tool in tools:
         assert tool["name"]
         assert tool["level"] in levels
@@ -100,7 +100,7 @@ async def test_settings_include_playbooks_and_the_reference_library(services) ->
     for phase in ("bom", "schematic", "board"):
         assert len(body["playbooks"][phase]) > 500, phase
         assert ".agents/" in body["playbooks"][phase], phase
-    assert "read_design_reference" in {tool["name"] for tool in body["tools"]}
+    assert "read_reference" in {tool["name"] for tool in body["tools"]}
 
 
 def test_every_workflow_step_cites_a_real_rule_section() -> None:
@@ -113,3 +113,23 @@ def test_every_workflow_step_cites_a_real_rule_section() -> None:
             assert step["tools"], step["step"]
             assert step["gate"], step["step"]
             assert "#" in step["ref"], step["step"]
+
+
+def test_tool_surface_uses_one_verb_object_name_per_action() -> None:
+    """The naming convention: one `<verb>_<object>` name, no phase-prefixed variants."""
+    import re
+
+    from kicad_harness.agent import tool_catalog
+    from kicad_harness.agent.agent import build_agent
+
+    names = set(build_agent()._function_toolset.tools)
+    assert names == set(tool_catalog.TOOLS), (
+        sorted(names - set(tool_catalog.TOOLS)), sorted(set(tool_catalog.TOOLS) - names))
+    verbs = {
+        "add", "autoroute", "check", "connect", "delete", "find", "flip", "generate", "get",
+        "label", "list", "mark", "measure", "move", "query", "read", "refill", "render",
+        "reply", "restore", "rotate", "route", "set", "start", "tidy",
+    }
+    for name in names:
+        assert re.fullmatch(r"[a-z][a-z0-9]*(_[a-z0-9]+)*", name), name
+        assert name.split("_")[0] in verbs, f"{name}: verb outside the convention"

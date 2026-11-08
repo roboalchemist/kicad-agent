@@ -94,7 +94,7 @@ def test_schematic_is_never_frozen() -> None:
 
     from kicad_harness.agent import agent as agent_mod
 
-    for fn in ("_schematic_edit", "generate_schematic_skidl", "start_board_layout"):
+    for fn in ("_schematic_edit", "generate_schematic", "start_board"):
         source = inspect.getsource(getattr(agent_mod, fn, None) or agent_mod.build_agent)
         if fn != "build_agent":
             assert "schematic is final" not in source, f"{fn} still freezes the schematic"

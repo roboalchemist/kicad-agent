@@ -26,9 +26,6 @@ const EDITING_TOOLS = new Set([
   "move_footprint",
   "rotate_footprint",
   "flip_footprint",
-  "move_reference_text",
-  "delete_tracks",
-  "delete_items",
   "add_track",
   "add_via",
   "autoroute",
@@ -36,8 +33,7 @@ const EDITING_TOOLS = new Set([
   "add_copper_zone",
   "refill_zones",
   "add_footprint",
-  "remove_footprint",
-  "set_pad_net",
+  "delete_board_items",
   "restore_version",
 ]);
 
@@ -127,7 +123,7 @@ export function useHarnessTools() {
 
   useRenderTool(
     {
-      name: "render_view",
+      name: "render",
       parameters: z.object({}).passthrough(),
       render: ({ parameters, status, result }) => <RenderViewCard status={status} result={result} params={parameters} />,
       agentId: AGENT_ID,
@@ -147,7 +143,7 @@ export function useHarnessTools() {
 
   useRenderTool(
     {
-      name: "list_feedback",
+      name: "list_reviews",
       parameters: z.object({}).passthrough(),
       render: ({ status, result }) => <FeedbackCard status={status} result={result} />,
       agentId: AGENT_ID,
@@ -157,7 +153,7 @@ export function useHarnessTools() {
 
   useRenderTool(
     {
-      name: "design_summary",
+      name: "get_design",
       parameters: z.object({}).passthrough(),
       render: ({ status, result }) => <SummaryCard status={status} result={result} />,
       agentId: AGENT_ID,
@@ -274,7 +270,7 @@ function statusLabel(status: ToolStatus): string {
   return { inProgress: "running", executing: "running", complete: "done" }[status];
 }
 
-/** render_view returns `["<meta json>", {data, media_type, kind:"binary"}]` as a JSON string.
+/** render returns `["<meta json>", {data, media_type, kind:"binary"}]` as a JSON string.
  * Pydantic serializes `data` as URL-safe base64, which a `data:` URL rejects, so convert it. */
 function parseRenderResult(result: string | undefined): { meta?: { url: string; caption: string }; image?: string } {
   if (!result) return {};
@@ -338,7 +334,7 @@ function RenderViewCard({ status, result, params }: { status: ToolStatus; result
   return (
     <div className="tool-card render-card" data-testid="render-view-card" data-status={status}>
       <div className="tool-card-header">
-        <span className="tool-name">render_view</span>
+        <span className="tool-name">render</span>
         {target && <span className="tool-args">{target}</span>}
         <span className={`tool-status tool-status-${status}`}>{statusLabel(status)}</span>
       </div>
@@ -432,7 +428,7 @@ function FeedbackCard({ status, result }: { status: ToolStatus; result?: string 
   return (
     <div className="tool-card feedback-card" data-status={status}>
       <div className="tool-card-header">
-        <span className="tool-name">list_feedback</span>
+        <span className="tool-name">list_reviews</span>
         <span className={`tool-status tool-status-${status}`}>{statusLabel(status)}</span>
         {r?.count !== undefined && <span className="badge">{r.count} threads</span>}
       </div>
@@ -450,12 +446,12 @@ function FeedbackCard({ status, result }: { status: ToolStatus; result?: string 
 
 function SummaryCard({ status, result }: { status: ToolStatus; result?: string }) {
   const r = parseResult<Record<string, unknown>>(result);
-  if (!r) return <ToolCard name="design_summary" parameters={{}} status={status} result={result} />;
+  if (!r) return <ToolCard name="get_design" parameters={{}} status={status} result={result} />;
   const drc = r.drc_counts as Record<string, number> | undefined;
   return (
     <div className="tool-card" data-status={status}>
       <div className="tool-card-header">
-        <span className="tool-name">design_summary</span>
+        <span className="tool-name">get_design</span>
         <span className={`tool-status tool-status-${status}`}>{statusLabel(status)}</span>
       </div>
       <div className="summary-line">

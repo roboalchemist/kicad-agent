@@ -42,7 +42,6 @@ from kicad_harness.config import Config
 KEEP_RECENT_IMAGES = 4
 MAX_LIST = 150
 
-
 @dataclass
 class Services:
     """Long-lived handles shared by every run (one per process)."""
@@ -68,7 +67,6 @@ class Services:
 
         return Workspace.open(self.config, name)
 
-
 @dataclass
 class HarnessDeps:
     """Run dependencies. Implements Pydantic AI's StateHandler protocol through `state`."""
@@ -80,9 +78,7 @@ class HarnessDeps:
     max_minutes: float | None = None
     on_commit: Callable[[dict], None] | None = None
 
-
 # --------------------------------------------------------------------------- helpers
-
 
 def _ws(ctx: RunContext[HarnessDeps]):
     design = ctx.deps.state.design
@@ -90,10 +86,8 @@ def _ws(ctx: RunContext[HarnessDeps]):
         raise RuntimeError("No design selected: the run's state must include `design`.")
     return ctx.deps.services.workspace(design)
 
-
 def _snapshot(state: DesignState) -> StateSnapshotEvent:
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=state.model_dump(mode="json"))
-
 
 async def _working(ctx: RunContext[HarnessDeps]) -> tuple[str, dict]:
     """Board hash and pick index of the working copy; raises when there is no board."""
@@ -106,7 +100,6 @@ async def _working(ctx: RunContext[HarnessDeps]) -> tuple[str, dict]:
     index = await asyncio.to_thread(svc.artifacts.index, board_hash)
     return board_hash, index
 
-
 class ToolRefusal(Exception):
     """A tool can't act in the current state; the model gets data back, not a retry.
 
@@ -114,7 +107,6 @@ class ToolRefusal(Exception):
     pydantic-ai's 5-tool retry budget, so a model that keeps trying dies with "exceeded max
     retries count of 5". A refusal returns a normal tool result instead.
     """
-
 
 def guarded(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Turn a ``ToolRefusal`` raised inside a tool into an ``ok: false`` tool result."""
@@ -129,7 +121,6 @@ def guarded(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     return wrapper
 
-
 def _require_board(ctx: RunContext[HarnessDeps], tool: str = "this tool"):
     """Refuse a board-only operation while the design is still a schematic.
 
@@ -140,16 +131,14 @@ def _require_board(ctx: RunContext[HarnessDeps], tool: str = "this tool"):
         raise ToolRefusal(
             f"{tool} needs a board, but this design is in the schematic phase and has none yet. "
             "Draw the schematic with the schematic tools (add_symbol, connect_pins, "
-            "generate_schematic_skidl) and call start_board_layout when ERC is clean; the board "
+            "generate_schematic) and call start_board when ERC is clean; the board "
             "tools work after that."
         )
-
 
 def _empty_index() -> dict:
     """A pick index with nothing on it, for the schematic phase."""
     return {"board": {"edge_bbox": [0, 0, 0, 0], "bbox": [0, 0, 0, 0], "layers": ["F.Cu", "B.Cu"]},
             "footprints": [], "pads": [], "tracks": [], "vias": [], "zones": [], "nets": []}
-
 
 async def _sync_state(ctx: RunContext[HarnessDeps], *, bump: bool = False) -> None:
     ws = _ws(ctx)
@@ -166,7 +155,6 @@ async def _sync_state(ctx: RunContext[HarnessDeps], *, bump: bool = False) -> No
     if bump or board_hash != st.board_hash:
         st.revision += 1
     st.board_hash = board_hash
-
 
 async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
     """Evaluate the stored goal on the working copy; updates state.goal.
@@ -232,7 +220,6 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
     ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
     return evaluation
 
-
 def _schematic_layout_facts(ws) -> dict[str, Any] | None:
     """Legibility measurement of the schematic, or None when it cannot be read.
 
@@ -249,7 +236,6 @@ def _schematic_layout_facts(ws) -> dict[str, Any] | None:
     except Exception:
         return None
 
-
 def _schematic_image(svc, ws) -> tuple[bytes, str]:
     """PNG bytes and URL of the current schematic sheet (cached by content hash)."""
     import hashlib
@@ -262,13 +248,11 @@ def _schematic_image(svc, ws) -> tuple[bytes, str]:
         render_mod.schematic_png(ws.schematic_path, out)
     return out.read_bytes(), f"/api/renders/{out.name}"
 
-
 def _parts_facts(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
     """Ground truth about which parts exist: schematic symbols and board footprints."""
     from kicad_harness.agent.audit import design_parts
 
     return design_parts(ctx.deps.services, _ws(ctx))
-
 
 async def _adversarial_audit(ctx: RunContext[HarnessDeps], model: Any = None) -> tuple[bool, str]:
     """Have a reviewer check the artifacts against the original brief.
@@ -317,7 +301,6 @@ async def _adversarial_audit(ctx: RunContext[HarnessDeps], model: Any = None) ->
     verdict: AuditResult = result.output
     return verdict.complete, summarise(verdict)
 
-
 def _trailers(ctx: RunContext[HarnessDeps], tool: str) -> dict[str, str]:
     trailers = {"Harness-Tool": tool}
     if ctx.deps.run_id:
@@ -326,18 +309,15 @@ def _trailers(ctx: RunContext[HarnessDeps], tool: str) -> dict[str, str]:
         trailers["Harness-Tool-Call"] = ctx.tool_call_id
     return trailers
 
-
 def _version_brief(version: Any) -> dict | None:
     if not version:
         return None
     v = version if isinstance(version, dict) else dataclasses.asdict(version)
     return {"sha": v.get("sha"), "short": v.get("short"), "subject": v.get("subject") or v.get("message")}
 
-
 def _engine_error_text(exc: Exception) -> str:
     kind = getattr(exc, "type", type(exc).__name__)
     return f"{kind}: {exc}"
-
 
 def _split_pin(text: str) -> tuple[str, str]:
     """Split ``"U1.3"`` into ``("U1", "3")``; raises ``ValueError`` with a usable message."""
@@ -347,7 +327,6 @@ def _split_pin(text: str) -> tuple[str, str]:
     if not ref or not number:
         raise ValueError(f"pins are written 'REF.PIN' (e.g. 'U1.3'); got {text!r}")
     return ref, number
-
 
 def _schematic(ctx: RunContext[HarnessDeps], want: str | None = None):
     """The working-copy schematic, with the libraries it actually uses resolved.
@@ -370,10 +349,8 @@ def _schematic(ctx: RunContext[HarnessDeps], want: str | None = None):
             doc.libraries[name] = table
     return doc
 
-
 _KI_LIBRARIES: dict[str, dict] = {}
 _KI_LIBRARY_DIRS: list[Path] | None = None
-
 
 def _kiCad_libraries(ctx: RunContext[HarnessDeps]) -> dict[str, dict]:
     """``{library: {symbol: LibrarySymbol}}`` for KiCad's installed symbol libraries.
@@ -386,7 +363,6 @@ def _kiCad_libraries(ctx: RunContext[HarnessDeps]) -> dict[str, dict]:
     if _KI_LIBRARY_DIRS is None:
         _KI_LIBRARY_DIRS = _symbol_libraries(ctx)
     return _KI_LIBRARIES
-
 
 def _library(ctx: RunContext[HarnessDeps], name: str) -> dict:
     """One symbol library by name (``Device``), parsed once and cached across runs."""
@@ -404,7 +380,6 @@ def _library(ctx: RunContext[HarnessDeps], name: str) -> dict:
             return _KI_LIBRARIES[name]
     _KI_LIBRARIES[name] = {}
     return _KI_LIBRARIES[name]
-
 
 def _symbol_libraries(ctx: RunContext[HarnessDeps]) -> list[Path]:
     """KiCad's own ``.kicad_sym`` files, plus any in the harness's configured directories."""
@@ -428,7 +403,6 @@ def _symbol_libraries(ctx: RunContext[HarnessDeps]) -> list[Path]:
             files += sorted(p for p in directory.glob("*.kicad_sym") if p.is_file())
     return files
 
-
 async def _schematic_commit(
     ctx: RunContext[HarnessDeps], tool: str, subject: str, payload: dict
 ) -> ToolReturn:
@@ -444,7 +418,6 @@ async def _schematic_commit(
         return_value={"ok": True, **payload, "version": _version_brief(version)},
         metadata=[_snapshot(ctx.deps.state)],
     )
-
 
 async def _schematic_edit(
     ctx: RunContext[HarnessDeps],
@@ -470,7 +443,6 @@ async def _schematic_edit(
     payload = result if isinstance(result, dict) else {"result": result}
     return await _schematic_commit(ctx, tool, subject, payload)
 
-
 async def _sync_schematic_state(ctx: RunContext[HarnessDeps], *, bump: bool = False) -> None:
     """Refresh phase, brief, head and the schematic's content hash in the shared state."""
     import hashlib
@@ -491,7 +463,6 @@ async def _sync_schematic_state(ctx: RunContext[HarnessDeps], *, bump: bool = Fa
             st.revision += 1
         st.schematic_hash = digest
 
-
 async def _edit(
     ctx: RunContext[HarnessDeps],
     tool: str,
@@ -510,8 +481,8 @@ async def _edit(
             "ok": False,
             "error": (
                 "This design has no board yet: it is in the schematic phase. Draw the schematic with "
-                "the schematic tools (add_symbol, connect_pins, generate_schematic_skidl, ...) and call "
-                "start_board_layout when ERC is clean; then the board tools become available."
+                "the schematic tools (add_symbol, connect_pins, generate_schematic, ...) and call "
+                "start_board when ERC is clean; then the board tools become available."
             ),
         })
 
@@ -534,7 +505,6 @@ async def _edit(
         metadata=[_snapshot(st)],
     )
 
-
 def _keep_recent_images(messages: list[ModelMessage]) -> list[ModelMessage]:
     """Replace all but the newest few tool-returned images with a placeholder to bound context growth."""
     seen = 0
@@ -555,7 +525,7 @@ def _keep_recent_images(messages: list[ModelMessage]) -> list[ModelMessage]:
                 if isinstance(item, BinaryContent) and item.media_type.startswith("image/"):
                     seen += 1
                     if seen > KEEP_RECENT_IMAGES:
-                        content[k] = "[older render omitted to save context; call render_view again to look]"
+                        content[k] = "[older render omitted to save context; call render again to look]"
                         changed = True
             if changed:
                 parts[j] = dataclasses.replace(part, content=content)
@@ -563,13 +533,11 @@ def _keep_recent_images(messages: list[ModelMessage]) -> list[ModelMessage]:
             out[i] = dataclasses.replace(msg, parts=parts)
     return out
 
-
 @dataclass(kw_only=True)
 class SteeringDelivered(CustomEvent):
     """AG-UI CUSTOM event: user messages sent mid-run have reached the agent."""
 
     messages: list[str]
-
 
 def _steering_hooks() -> Hooks:
     """Before each model request, hand the agent any messages the user sent while it was working."""
@@ -591,7 +559,6 @@ def _steering_hooks() -> Hooks:
         return request_context
 
     return hooks
-
 
 def _center_of(entities: list[dict]) -> tuple[float, float, float]:
     """Centre and a sensible view size (mm) for a set of resolved entities."""
@@ -615,12 +582,10 @@ def _center_of(entities: list[dict]) -> tuple[float, float, float]:
     span = max(max(xs) - min(xs), max(ys) - min(ys))
     return cx, cy, max(6.0, span * 2.2 + 3.0)
 
-
 def _resolve(index: dict, ref: str) -> list[dict]:
     from kicad_harness.engine.geometry import resolve
 
     return resolve(index, ref)
-
 
 def _uuids_for(index: dict, refs: list[str]) -> list[str]:
     uuids: list[str] = []
@@ -629,7 +594,6 @@ def _uuids_for(index: dict, refs: list[str]) -> list[str]:
             if entity.get("uuid"):
                 uuids.append(entity["uuid"])
     return uuids
-
 
 def _compact_component(fp: dict) -> dict:
     return {
@@ -641,7 +605,6 @@ def _compact_component(fp: dict) -> dict:
         "rotation": round(fp.get("rotation", 0), 1),
         "side": fp.get("side"),
     }
-
 
 def _thread_brief(thread: dict) -> dict:
     anchor = thread.get("anchor") or {}
@@ -662,30 +625,29 @@ def _thread_brief(thread: dict) -> dict:
         "replies": [{"author": r["author"], "body": r["body"]} for r in thread.get("replies", [])[-3:]],
     }
 
-
 INSTRUCTIONS = """\
 You are a PCB layout engineer editing a KiCad 10 board through tools. A human watches every step live in a web UI \
 (board view, your reasoning and tool calls, version history), can comment on specific parts of the board, and can roll \
 back your work.
 
 Goal handling:
-- When the user states a goal in words ("move the LED to the left edge", "keep it under 30 mm"), turn it into machine-checkable criteria yourself and save them with `set_goal`. Inspect the board first (design_summary, query, measure) so references, regions and distances are real, then call `check`. Never ask the user to pick criterion types.
+- When the user states a goal in words ("move the LED to the left edge", "keep it under 30 mm"), turn it into machine-checkable criteria yourself and save them with `set_goal`. Inspect the board first (get_design, query, measure) so references, regions and distances are real, then call `check`. Never ask the user to pick criterion types.
 - `set_goal` takes a short `summary` (their intent, in their words where possible) and `criteria` from: drc_errors, drc_warnings, unconnected, board_size (max_w/max_h), edge_clearance (min_mm), max_distance/min_distance (a, b, max_mm/min_mm), within_region (ref, region [x1,y1,x2,y2]), open_threads (max, optional severities), schematic_legibility (max).
 
 Phases:
-- A design starts in the SCHEMATIC phase: there is no board yet, only `schematic.kicad_sch`. Draw the circuit, keep ERC clean (erc_errors/erc_warnings criteria), then call `start_board_layout`. That creates the board, places the footprints from KiCad's own netlist and assigns their nets, so layout starts electrically correct. After it, you are in the BOARD phase and move parts and route.
-- Prefer `generate_schematic_skidl` to draw a whole design from a parts and nets list; use the individual symbol and wiring tools to fix or extend it. Every part needs a real KiCad footprint (`Library:Footprint`) or it cannot be placed on the board.
-- A schematic is not finished when it is merely ERC-clean: it must be readable. Call `check_schematic_layout` after drawing or editing; while it reports a score above 0, call `tidy_schematic` and check again. The [legible] goal criterion is measured from the drawing itself and is mandatory, so the loop will not end until it passes.
-- Arrange by circuit, not by reference: a part belongs beside the part it serves. Series/pull-up resistors sit by the input they protect, decoupling capacitors by the IC they decouple, and each power symbol at the pin it names. `tidy_schematic` puts 2-pin passives beside their owner; `check_schematic_layout` lists the remaining offenders under `findings` (a passive far from its owner, a point-to-point net left as two distant labels, a power symbol whose value contradicts its net). Act on those findings rather than accepting them.
+- A design starts in the SCHEMATIC phase: there is no board yet, only `schematic.kicad_sch`. Draw the circuit, keep ERC clean (erc_errors/erc_warnings criteria), then call `start_board`. That creates the board, places the footprints from KiCad's own netlist and assigns their nets, so layout starts electrically correct. After it, you are in the BOARD phase and move parts and route.
+- Prefer `generate_schematic` to draw a whole design from a parts and nets list; use the individual symbol and wiring tools to fix or extend it. Every part needs a real KiCad footprint (`Library:Footprint`) or it cannot be placed on the board.
+- A schematic is not finished when it is merely ERC-clean: it must be readable. Call `check` after drawing or editing; while it reports a score above 0, call `tidy_schematic` and check again. The [legible] goal criterion is measured from the drawing itself and is mandatory, so the loop will not end until it passes.
+- Arrange by circuit, not by reference: a part belongs beside the part it serves. Series/pull-up resistors sit by the input they protect, decoupling capacitors by the IC they decouple, and each power symbol at the pin it names. `tidy_schematic` puts 2-pin passives beside their owner; `check` lists the remaining offenders under `findings` (a passive far from its owner, a point-to-point net left as two distant labels, a power symbol whose value contradicts its net). Act on those findings rather than accepting them.
 - `findings` also surfaces broken power symbols (e.g. a GND symbol wired to +5V). Fix the netlist or the symbol first: no placement can put a ground next to a part while the symbol names a different net.
 - Once the parts are close, call `route_schematic` to draw direct wires for point-to-point nets instead of leaving two labels. It keeps the net names and rolls back any wire that would change connectivity; if it skips a net, the two parts are too far apart or a wire would cross a pin — move them closer and try again.
-- Look at the sheet as an image too: `check_schematic_layout` returns the rendered schematic with its score, and `check` returns the rendered board with its criteria. A sheet can score 0 and still look wrong at a glance — a part marooned at the edge, channel rows that do not line up, a wall of duplicate labels. Use `render_schematic` / `render_view` for a closer look, and fix what you see before calling the work finished.
+- Look at the sheet as an image too: `check` returns the rendered schematic with its score, and `check` returns the rendered board with its criteria. A sheet can score 0 and still look wrong at a glance — a part marooned at the edge, channel rows that do not line up, a wall of duplicate labels. Use `render` / `render` for a closer look, and fix what you see before calling the work finished.
 
 Part sourcing (do this before choosing parts):
 - Boards are assembled by JLCPCB, so a part is only real if JLCPCB stocks it. Use `find_parts` to search their catalogue: pass `query` for a part number (e.g. "NE555" finds NE555DR) or `category` to browse by type (e.g. "LED", "Relays"). It reports stock, unit price, and whether a part is `basic` (no assembly fee) or `extended` (a per-part reel fee). Prefer basic parts with large stock unless the user asks otherwise. The catalogue's description text is empty, so searching for words like "red LED" will not work — browse the category instead.
 - Very few parts are basic: if `find_parts` returns an empty list, read its `empty_reason` (it says which filter removed everything) and retry with that filter relaxed rather than repeating the same query.
-- Use `check_part` on each part you intend to use: it returns the JLCPCB matches plus datasheet availability. If `usable_for_jlc` is false, say so and choose a stocked alternative rather than designing a board that cannot be made.
-- Use `part_datasheet` to confirm a pinout or rating when you are not certain; it returns datasheet text. If i2cdb has no record, a supplier datasheet URL is included — do not invent pin numbers you have not verified.
+- Use `find_parts` on each part you intend to use: it returns the JLCPCB matches plus datasheet availability. If `usable_for_jlc` is false, say so and choose a stocked alternative rather than designing a board that cannot be made.
+- Use `read_part_datasheet` to confirm a pinout or rating when you are not certain; it returns datasheet text. If i2cdb has no record, a supplier datasheet URL is included — do not invent pin numbers you have not verified.
 - Mention the LCSC codes and the basic/extended split to the user when you finish the schematic.
 
 Conventions:
@@ -693,25 +655,23 @@ Conventions:
 - Refer to parts by reference designator (U1), pads as REF.PAD (U1.3), nets as net:NAME.
 
 How to work:
-1. Orient: call design_summary, then render_view to look at the board. Use query and measure for exact numbers; \
+1. Orient: call get_design, then render to look at the board. Use query and measure for exact numbers; \
 never guess coordinates from an image alone.
 2. Edit with the editing tools. Every successful edit is committed as a new version the user can see and roll back, \
 so prefer a few deliberate edits over many tiny ones.
-3. Verify after edits: call check (DRC plus the goal criteria) and, for the schematic, check_schematic_layout. Look at the result visually with render_view, zoomed \
+3. Verify after edits: call check (DRC plus the goal criteria) and, for the schematic, check. Look at the result visually with render, zoomed \
 on whatever you changed (pass target, view_mm and highlight). Tracks under solder mask are easier to judge in 2D than 3D.
 4. Routing: after moving parts, rip up the affected tracks (delete_tracks) and call autoroute rather than drawing \
 long routes by hand; hand-route only short or critical connections.
-5. Review feedback: list_feedback shows the user's comments, anchored to specific entities. Address must_fix and \
-warning items first. After handling one, call mark_addressed with a short note (only the user can resolve it); reply \
-with reply_to_thread if you disagree or need clarification.
+5. Review feedback: list_reviews shows the user's comments, anchored to specific entities. Address must_fix and \
+warning items first. After handling one, call mark_review_addressed with a short note (only the user can resolve it); reply \
+with reply_review if you disagree or need clarification.
 6. Never claim the goal is met unless check reports every criterion passing. If you are stuck, say exactly what \
 blocks you.
 Keep messages to the user short: what you changed and why.
 """
 
-
 _tool_description_cache: dict[str, str] | None = None
-
 
 def tool_descriptions() -> dict[str, str]:
     """``{tool name: live docstring}`` for the Settings page, built once per process.
@@ -731,9 +691,7 @@ def tool_descriptions() -> dict[str, str]:
             _tool_description_cache = {}
     return _tool_description_cache
 
-
 _model_override: str | None = None
-
 
 def current_model() -> str:
     """The model new runs use: the UI's selection, else the configured HARNESS_MODEL."""
@@ -741,13 +699,11 @@ def current_model() -> str:
 
     return _model_override or config_mod.get().model
 
-
 def set_model(model: str | None) -> None:
     """Select the model for subsequent runs. Drops the cached agent so it is rebuilt lazily."""
     global _model_override, _agent
     _model_override = model or None
     _agent = None
-
 
 def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredToolRequests]:
     """Create the harness agent. `model` defaults to `current_model()`.
@@ -782,7 +738,6 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         defer_model_check=True,
     )
 
-
     @agent.instructions
     def session_context(ctx: RunContext[HarnessDeps]) -> str:
         st = ctx.deps.state
@@ -799,9 +754,9 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             lines.append(f"The user asked for: {brief}")
         if phase == "schematic":
             lines.append(
-                "SCHEMATIC PHASE: there is no board yet. Draw the circuit — either generate_schematic_skidl "
-                "for a whole design at once, or add_symbol/connect_pins/add_schematic_label by hand. Check with "
-                "check_schematic (ERC), then call start_board_layout to create the netlisted board. Board tools "
+                "SCHEMATIC PHASE: there is no board yet. Draw the circuit — either generate_schematic "
+                "for a whole design at once, or add_symbol/connect_pins/label_net by hand. Check with "
+                "check (ERC), then call start_board to create the netlisted board. Board tools "
                 "(move_footprint, autoroute, drc, ...) will refuse until then."
             )
         if st.loop:
@@ -824,7 +779,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
     # ------------------------------------------------------------------ inspection
 
     @agent.tool
-    async def read_design_reference(
+    async def read_reference(
         ctx: RunContext[HarnessDeps], topic: str, section: str | None = None
     ) -> ToolReturn:
         """Read the harness's PCB design rule or reference for a topic (e.g. "pcb-routing",
@@ -858,13 +813,13 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool
     @guarded
-    async def design_summary(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
+    async def get_design(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
         """Board outline, components (ref, value, footprint, position, side), nets, DRC counts, goal status and open review threads."""
         svc = ctx.deps.services
         ws = _ws(ctx)
         await _sync_state(ctx)
         if ws.phase() == "schematic" and not ws.board_path.is_file():
-            # A model's first move is often design_summary; answer it for the schematic rather
+            # A model's first move is often get_design; answer it for the schematic rather
             # than failing, so the run starts with the right picture.
             return await schematic_summary(ctx)
         board_hash, index = await _working(ctx)
@@ -951,11 +906,53 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             raise ModelRetry(f"Could not measure {a!r} to {b!r}: {exc}") from exc
 
     @agent.tool
-    @guarded
-    async def check(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
-        """Run KiCad DRC on the current board and evaluate every goal criterion."""
+    async def check(ctx: RunContext[HarnessDeps], detail: bool = False) -> ToolReturn:
+        """Check the current phase and return an image of it.
+
+        Schematic phase: ERC counts, the legibility score/counts/findings and the goal.
+        Board phase: DRC counts, unconnected items and the goal. `detail=True` adds the first
+        violations; the rendered artifact always comes with the result so visual faults show up.
+        """
         svc = ctx.deps.services
+        ws = _ws(ctx)
         await _sync_state(ctx)
+
+        if ws.phase() == "schematic" or not ws.board_path.is_file():
+            from kicad_harness.engine import kicad_cli
+            from kicad_harness.engine import layout as layout_mod
+
+            try:
+                erc = await asyncio.to_thread(kicad_cli.erc, ws.schematic_path, config=svc.config)
+                erc_counts, erc_violations = erc["counts"], erc["violations"]
+            except Exception as exc:
+                erc_counts = {"errors": None, "warnings": None}
+                erc_violations = [{"error": _engine_error_text(exc)}]
+            try:
+                doc = await asyncio.to_thread(_schematic, ctx)
+                layout_report = await asyncio.to_thread(layout_mod.analyze, doc)
+                layout_report["findings"] = await asyncio.to_thread(layout_mod.findings, doc)
+            except Exception as exc:
+                layout_report = {"ok": False, "score": None, "error": _engine_error_text(exc)}
+            evaluation = await _evaluate(ctx)
+            result: dict = {
+                "phase": "schematic",
+                "erc": erc_counts,
+                "layout": layout_report,
+                "goal_met": evaluation["met"],
+                "criteria": evaluation["criteria"],
+            }
+            if detail:
+                result["erc_violations"] = erc_violations[:15]
+            try:
+                png, url = await asyncio.to_thread(_schematic_image, svc, ws)
+                ctx.deps.state.last_render = RenderInfo(url=url, caption="Schematic sheet", view={})
+                return ToolReturn(
+                    return_value=[result, BinaryContent(data=png, media_type="image/png")],
+                    metadata=[_snapshot(ctx.deps.state)],
+                )
+            except Exception:
+                return ToolReturn(return_value=result, metadata=[_snapshot(ctx.deps.state)])
+
         board_hash, _ = await _working(ctx)
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
         evaluation = await _evaluate(ctx)
@@ -966,40 +963,38 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 "severity": v.get("severity"),
                 "description": v.get("description"),
                 "items": [
-                    {"description": it.get("description"), "x": it.get("x"), "y": it.get("y"), "uuid": it.get("uuid")}
+                    {"description": it.get("description"), "x": it.get("x"), "y": it.get("y"),
+                     "uuid": it.get("uuid")}
                     for it in v.get("items", [])[:3]
                 ],
             }
 
         result = {
+            "phase": "board",
             "drc_counts": drc.get("counts", {}),
             "violations": [brief(v) for v in drc.get("violations", [])[:30]],
             "unconnected": [brief(v) for v in drc.get("unconnected", [])[:20]],
             "goal_met": evaluation["met"],
             "criteria": evaluation["criteria"],
         }
-        # A plain image of the layout, so the model can catch what DRC cannot: a part stranded
-        # at the edge, a wall of labels, a channel that reads backwards.
-        ws = _ws(ctx)
-        if ws.board_path.is_file():
-            try:
-                spec = {"mode": "2d", "side": "front"}
-                png_path, url = await asyncio.to_thread(svc.artifacts.render, board_hash, spec)
-                ctx.deps.state.last_render = RenderInfo(
-                    url=url, caption="Board layout, front (fitted)", view=spec)
-                png = Path(png_path).read_bytes()
-                return ToolReturn(
-                    return_value=[result, BinaryContent(data=png, media_type="image/png")],
-                    metadata=[_snapshot(ctx.deps.state)],
-                )
-            except Exception:
-                pass
-        return ToolReturn(return_value=result, metadata=[_snapshot(ctx.deps.state)])
+        try:
+            spec = {"mode": "2d", "side": "front"}
+            png_path, url = await asyncio.to_thread(svc.artifacts.render, board_hash, spec)
+            ctx.deps.state.last_render = RenderInfo(
+                url=url, caption="Board layout, front (fitted)", view=spec)
+            return ToolReturn(
+                return_value=[result, BinaryContent(data=Path(png_path).read_bytes(),
+                                                   media_type="image/png")],
+                metadata=[_snapshot(ctx.deps.state)],
+            )
+        except Exception:
+            return ToolReturn(return_value=result, metadata=[_snapshot(ctx.deps.state)])
 
     @agent.tool
     @guarded
-    async def render_view(
+    async def render(
         ctx: RunContext[HarnessDeps],
+        kind: str = "board",
         target: str | None = None,
         x: float | None = None,
         y: float | None = None,
@@ -1010,7 +1005,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         highlight: list[str] | None = None,
         labels: bool = True,
     ) -> ToolReturn:
-        """Render the board as an image you can see.
+        """Render the board (`kind="board"`) or the whole schematic sheet (`kind="schematic"`)
+        as an image you can see.
 
         Args:
             target: Centre the view on this (U1, U1.3, net:GND, a UUID). Overrides x/y.
@@ -1024,6 +1020,19 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             highlight: 2d only: things to outline in cyan (refs, REF.PAD, net:NAME, UUIDs).
             labels: 2d only: draw reference designators (and net names on highlighted pads).
         """
+        if kind == "schematic":
+            ws = _ws(ctx)
+            try:
+                png, url = await asyncio.to_thread(_schematic_image, ctx.deps.services, ws)
+            except Exception as exc:
+                return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+            caption = "Schematic sheet"
+            ctx.deps.state.last_render = RenderInfo(url=url, caption=caption, view={})
+            return ToolReturn(
+                return_value=[json.dumps({"url": url, "caption": caption}),
+                              BinaryContent(data=png, media_type="image/png")],
+                metadata=[_snapshot(ctx.deps.state)],
+            )
         svc = ctx.deps.services
         await _sync_state(ctx)
         board_hash, index = await _working(ctx)
@@ -1070,7 +1079,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool
     @guarded
-    async def list_feedback(ctx: RunContext[HarnessDeps], status: str = "open") -> Any:
+    async def list_reviews(ctx: RunContext[HarnessDeps], status: str = "open") -> Any:
         """The user's review threads, anchored to entities on the board and located on the current version.
 
         Args:
@@ -1090,7 +1099,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return {"count": len(threads), "threads": [_thread_brief(t) for t in threads]}
 
     @agent.tool
-    async def reply_to_thread(ctx: RunContext[HarnessDeps], number: int, message: str) -> dict:
+    async def reply_review(ctx: RunContext[HarnessDeps], number: int, message: str) -> dict:
         """Reply to review thread #number (to explain a decision or ask the user a question)."""
         svc = ctx.deps.services
         thread = svc.store.review.by_number(ctx.deps.state.design, number)
@@ -1100,7 +1109,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return {"ok": True, "thread": number}
 
     @agent.tool
-    async def mark_addressed(ctx: RunContext[HarnessDeps], number: int, note: str) -> dict:
+    async def mark_review_addressed(ctx: RunContext[HarnessDeps], number: int, note: str) -> dict:
         """Mark review thread #number as addressed by the current version, with a short note on what changed."""
         svc = ctx.deps.services
         thread = svc.store.review.by_number(ctx.deps.state.design, number)
@@ -1142,30 +1151,39 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
-    async def move_reference_text(ctx: RunContext[HarnessDeps], ref: str, x: float, y: float) -> ToolReturn:
-        """Move a footprint's silkscreen reference designator to an absolute position (mm)."""
-        return await _edit(
-            ctx, "move_reference_text", f"Move {ref} silkscreen label to ({x:g}, {y:g})",
-            lambda b: engine(ctx).call("move_reference_text", board=b, ref=ref, x=x, y=y),
-        )
+    async def delete_board_items(
+        ctx: RunContext[HarnessDeps],
+        nets: list[str] | None = None,
+        refs: list[str] | None = None,
+        uuids: list[str] | None = None,
+    ) -> ToolReturn:
+        """Delete board items by selector: `nets` rip up their tracks and vias, `refs` remove
+        footprints (and the copper on them), `uuids` delete any item returned by query."""
+        if not (nets or refs or uuids):
+            return ToolReturn(return_value={"ok": False, "error": "give nets, refs or uuids"})
 
-    @agent.tool(sequential=True)
-    async def delete_tracks(ctx: RunContext[HarnessDeps], nets: list[str] | None = None) -> ToolReturn:
-        """Rip up tracks and vias: only on `nets` if given, otherwise ALL routing on the board."""
-        what = ", ".join(nets) if nets else "all nets"
-        return await _edit(
-            ctx, "delete_tracks", f"Rip up tracks on {what}",
-            lambda b: engine(ctx).call("delete_tracks", board=b, nets=nets),
-            risky=True,
-        )
+        def work(board) -> dict:
+            eng = engine(ctx)
+            out: dict = {"deleted": 0}
+            if nets:
+                result = eng.call("delete_tracks", board=board, nets=nets)
+                out["tracks"] = result
+                out["deleted"] += int(result.get("deleted", 0))
+            for ref in refs or []:
+                out.setdefault("footprints", []).append(
+                    eng.call("remove_footprint", board=board, ref=ref))
+                out["deleted"] += 1
+            if uuids:
+                result = eng.call("delete_items", board=board, uuids=uuids)
+                out["items"] = result
+                out["deleted"] += int(result.get("deleted", 0))
+            return out
 
-    @agent.tool(sequential=True)
-    async def delete_items(ctx: RunContext[HarnessDeps], uuids: list[str]) -> ToolReturn:
-        """Delete specific board items (tracks, vias, zones, shapes) by UUID."""
-        return await _edit(
-            ctx, "delete_items", f"Delete {len(uuids)} item(s)",
-            lambda b: engine(ctx).call("delete_items", board=b, uuids=uuids),
-        )
+        if nets and not refs and not uuids:
+            subject = f"Rip up tracks on {', '.join(nets)}"
+        else:
+            subject = "Delete board items"
+        return await _edit(ctx, "delete_board_items", subject, work, risky=True)
 
     @agent.tool(sequential=True)
     async def add_track(
@@ -1269,23 +1287,6 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
         return await _edit(ctx, "add_footprint", f"Add {ref} ({footprint}) at ({x:g}, {y:g})", work)
 
-    @agent.tool(sequential=True)
-    async def remove_footprint(ctx: RunContext[HarnessDeps], ref: str) -> ToolReturn:
-        """Delete a footprint from the board."""
-        return await _edit(
-            ctx, "remove_footprint", f"Remove {ref}",
-            lambda b: engine(ctx).call("remove_footprint", board=b, ref=ref),
-            risky=True,
-        )
-
-    @agent.tool(sequential=True)
-    async def set_pad_net(ctx: RunContext[HarnessDeps], ref: str, pad: str, net: str) -> ToolReturn:
-        """Connect a pad to a net (the net is created if new). Changes connectivity, so route afterwards."""
-        return await _edit(
-            ctx, "set_pad_net", f"Connect {ref}.{pad} to {net}",
-            lambda b: engine(ctx).call("set_pad_net", board=b, ref=ref, pad=str(pad), net=net),
-        )
-
     # ------------------------------------------------------------------ history
 
     @agent.tool
@@ -1324,7 +1325,6 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     # ------------------------------------------------------------------ schematic phase
 
-    @agent.tool
     async def schematic_summary(
         ctx: RunContext[HarnessDeps], **_: Any
     ) -> ToolReturn:
@@ -1347,7 +1347,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                     "ok": False,
                     "error": f"the schematic could not be read: {exc}",
                     "hint": "It may be mid-write. Call schematic_summary again, or regenerate the "
-                    "schematic with generate_schematic_skidl.",
+                    "schematic with generate_schematic.",
                     "phase": ws.phase(),
                     "brief": ws.brief(),
                 },
@@ -1414,12 +1414,22 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
-    async def remove_symbol(ctx: RunContext[HarnessDeps], ref: str) -> ToolReturn:
-        """Delete a symbol from the schematic, along with wires that end on its pins."""
-        doc = _schematic(ctx)
-        if doc.remove_symbol(ref):
-            return await _schematic_commit(ctx, "remove_symbol", f"Remove {ref}", {"removed": ref})
-        return ToolReturn(return_value={"ok": False, "error": f"no symbol {ref!r} on the schematic"})
+    async def delete_schematic_items(ctx: RunContext[HarnessDeps],
+                                     nets: list[str] | None = None,
+                                     refs: list[str] | None = None) -> ToolReturn:
+        """Delete schematic content: each `net` loses its wires and labels; each `ref` loses its
+        symbol and the wires ending on its pins."""
+        if not (nets or refs):
+            return ToolReturn(return_value={"ok": False, "error": "give at least one net or ref"})
+
+        def work(doc) -> dict:
+            wires = sum(doc.remove_wires(net=net) for net in (nets or []))
+            symbols = sum(1 for ref in (refs or []) if doc.remove_symbol(ref))
+            return {"wires": wires, "symbols": symbols}
+
+        return await _schematic_edit(
+            ctx, "delete_schematic_items", "Delete schematic items", work,
+        )
 
     @agent.tool(sequential=True)
     async def connect_pins(
@@ -1440,12 +1450,12 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
-    async def move_schematic_symbol(
+    async def move_symbol(
         ctx: RunContext[HarnessDeps], ref: str, x: float, y: float, rotation: float | None = None
     ) -> ToolReturn:
         """Move a schematic symbol to (x, y) mm, optionally rotating it. The reference/value text moves with it."""
         return await _schematic_edit(
-            ctx, "move_schematic_symbol", f"Move {ref} to ({x:g}, {y:g})",
+            ctx, "move_symbol", f"Move {ref} to ({x:g}, {y:g})",
             lambda d: {"moved": bool(d.move_symbol(ref, x, y, rotation))},
         )
 
@@ -1459,22 +1469,23 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
-    async def disconnect_schematic(ctx: RunContext[HarnessDeps], net: str | None = None,
-                                   ref: str | None = None) -> ToolReturn:
-        """Remove wires (and, for a net, its labels) so a wrong connection can be redone:
-        pass net="NAME" to clear that net, or ref="R1" to clear every wire touching R1's pins."""
-        if not net and not ref:
-            return ToolReturn(return_value={"ok": False, "error": "give a net or a ref"})
-        return await _schematic_edit(
-            ctx, "disconnect_schematic", f"Disconnect {net or ref}",
-            lambda d: {"removed": d.remove_wires(net=net, reference=ref)},
-        )
-
-    @agent.tool(sequential=True)
-    async def label_pin(ctx: RunContext[HarnessDeps], pin: str, net: str) -> ToolReturn:
-        """Attach a net to one pin (e.g. "U1.3") with a short stub and a label, without needing a partner pin."""
+    async def label_net(ctx: RunContext[HarnessDeps], target: str, net: str,
+                        global_: bool = False) -> ToolReturn:
+        """Attach a net to one pin ("U1.3") or to a point ("120.5,80"); `global_` makes a
+        global (sheet-wide power-style) label. For pin-to-pin connections use connect_pins."""
+        text = target.strip()
+        if "," in text:
+            try:
+                x_text, y_text = text.split(",", 1)
+                x, y = float(x_text), float(y_text)
+            except ValueError as exc:
+                raise ModelRetry("target must be a pin (U1.3) or 'x,y' in mm") from exc
+            return await _schematic_edit(
+                ctx, "label_net", f"Label {net} at ({x:g}, {y:g})",
+                lambda d: {"label": str(d.add_label(net, x, y, global_=global_)[1])},
+            )
         try:
-            ref, number = _split_pin(pin)
+            ref, number = _split_pin(text)
         except ValueError as exc:
             raise ModelRetry(str(exc)) from exc
 
@@ -1488,30 +1499,12 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             end = (point[0] + 3.81, point[1])
             doc.add_wire([point, end])
             doc.add_label(net, *end, anchor="left")
-            return {"ok": True, "pin": pin, "net": net}
+            return {"ok": True, "pin": text, "net": net}
 
-        return await _schematic_edit(ctx, "label_pin", f"Label {pin} as {net}", work)
-
-    @agent.tool(sequential=True)
-    async def add_schematic_label(
-        ctx: RunContext[HarnessDeps], name: str, x: float, y: float, global_: bool = False
-    ) -> ToolReturn:
-        """Put a net label on the schematic at (x, y); `global_` makes it a global (sheet-wide power-style) label."""
-        return await _schematic_edit(
-            ctx, "add_schematic_label", f"Label {name} at ({x:g}, {y:g})",
-            lambda d: {"label": str(d.add_label(name, x, y, global_=global_)[1])},
-        )
+        return await _schematic_edit(ctx, "label_net", f"Label {text} as {net}", work)
 
     @agent.tool(sequential=True)
-    async def add_schematic_text(ctx: RunContext[HarnessDeps], text: str, x: float, y: float) -> ToolReturn:
-        """Add a note to the schematic at (x, y). Notes don't connect anything."""
-        return await _schematic_edit(
-            ctx, "add_schematic_text", f"Note at ({x:g}, {y:g})",
-            lambda d: {"text": text[:40]},
-        )
-
-    @agent.tool(sequential=True)
-    async def generate_schematic_skidl(
+    async def generate_schematic(
         ctx: RunContext[HarnessDeps],
         parts: list[dict],
         nets: list[dict],
@@ -1615,61 +1608,14 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 payload["unstocked"] = [s["value"] for s in sourcing if not s["jlc_stocked"]]
         except Exception:
             pass  # sourcing is advice; it must never block drawing the schematic
-        return await _schematic_commit(ctx, "generate_schematic_skidl", f"Draw the schematic with skidl ({len(validated_parts)} parts)", payload)
-
-    @agent.tool
-    async def check_schematic_layout(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
-        """Measure whether the schematic is legible: overlapping symbols or net labels, wires
-        running through parts, dangling wire ends, anything off the sheet. Returns a score (0 is
-        legible), per-fault counts and the worst violations. The goal's mandatory [legible]
-        criterion uses the same measurement, so the run cannot finish while it is above 0."""
-        from kicad_harness.engine import layout as layout_mod
-
-        try:
-            doc = await asyncio.to_thread(_schematic, ctx)
-            report = await asyncio.to_thread(layout_mod.analyze, doc)
-            report["findings"] = await asyncio.to_thread(layout_mod.findings, doc)
-        except Exception as exc:
-            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
-        await _sync_schematic_state(ctx)
-        ws = _ws(ctx)
-        try:
-            png, url = await asyncio.to_thread(_schematic_image, ctx.deps.services, ws)
-        except Exception:
-            return ToolReturn(return_value=report, metadata=[_snapshot(ctx.deps.state)])
-        ctx.deps.state.last_render = RenderInfo(url=url, caption="Schematic sheet", view={})
-        return ToolReturn(
-            return_value=[report, BinaryContent(data=png, media_type="image/png")],
-            metadata=[_snapshot(ctx.deps.state)],
-        )
-
-    @agent.tool
-    async def render_schematic(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
-        """Render the whole schematic sheet as an image you can look at.
-
-        Same picture the UI shows. Use it after tidy_schematic: the legibility score catches
-        overlaps and dangling wires, but only the image shows a sheet that is technically clean
-        and still reads badly (a channel that runs backwards, a part marooned at the edge, a wall
-        of duplicate labels)."""
-        ws = _ws(ctx)
-        try:
-            png, url = await asyncio.to_thread(_schematic_image, ctx.deps.services, ws)
-        except Exception as exc:
-            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
-        caption = "Schematic sheet"
-        ctx.deps.state.last_render = RenderInfo(url=url, caption=caption, view={})
-        return ToolReturn(
-            return_value=[json.dumps({"url": url, "caption": caption}),
-                          BinaryContent(data=png, media_type="image/png")],
-            metadata=[_snapshot(ctx.deps.state)],
-        )
+        return await _schematic_commit(ctx, "generate_schematic", f"Draw the schematic with skidl ({len(validated_parts)} parts)", payload)
 
     @agent.tool(sequential=True)
     async def tidy_schematic(ctx: RunContext[HarnessDeps], paper: str | None = None) -> ToolReturn:
         """Relayout the schematic: symbols in circuit-flow order, each 2-pin passive beside the
         part it serves (pull-ups by their input, decoupling caps by their IC), one short stub and
         net label per pin. Connectivity is preserved (labels with the same net name merge), so the
-        netlist does not change. Call check_schematic_layout afterwards, then route_schematic."""
+        netlist does not change. Call check afterwards, then route_schematic."""
         from kicad_harness.engine import layout as layout_mod
 
         return await _schematic_edit(
@@ -1718,13 +1664,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             f"Wire {len(report['wired'])} point-to-point nets", report,
         )
 
-    @agent.tool
-    async def check_schematic(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
-        """Run ERC and the legibility check on the working schematic, and evaluate the goal."""
-        return ToolReturn(return_value=await _evaluate(ctx), metadata=[_snapshot(ctx.deps.state)])
-
     @agent.tool(sequential=True)
-    async def start_board_layout(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
+    async def start_board(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
         """Finish the schematic and lay out its board: creates the board, places every footprint and
         assigns the nets KiCad's netlist gives, then switches the design to the board phase.
         Call this once the schematic is complete and ERC is clean."""
@@ -1747,7 +1688,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                     for v in report["violations"]
                     if v["severity"] == "error"
                 ][:20],
-                "hint": "Use check_schematic for the full list, fix the wiring, then call this again.",
+                "hint": "Use check for the full list, fix the wiring, then call this again.",
             })
 
         def run() -> dict:
@@ -1772,13 +1713,13 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         version = await asyncio.to_thread(
             lambda: ws.commit("Lay out the board from the schematic", author="agent",
-                              trailers=_trailers(ctx, "start_board_layout"))
+                              trailers=_trailers(ctx, "start_board"))
         )
         await _sync_state(ctx, bump=True)
         await _sync_schematic_state(ctx)
         payload.update(ok=True, phase="board", version=_version_brief(version))
         if ctx.deps.on_commit and version:
-            ctx.deps.on_commit({"tool": "start_board_layout", **_version_brief(version)})
+            ctx.deps.on_commit({"tool": "start_board", **_version_brief(version)})
         return ToolReturn(return_value=payload, metadata=[_snapshot(ctx.deps.state)])
 
     # ------------------------------------------------------------------ parts sourcing
@@ -1791,17 +1732,28 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         package: str | None = None,
         basic_only: bool = False,
         limit: int = 15,
+        categories: bool = False,
+        mpn: str | None = None,
+        lcsc: str | None = None,
     ) -> ToolReturn:
-        """Search the JLCPCB catalogue for parts that can actually be assembled.
+        """Search the JLCPCB catalogue, browse its categories, or verify one part.
 
-        `query` matches the manufacturer part number (e.g. "NE555" finds NE555DR). `category`
-        browses by type (e.g. "LED", "Resistors", "Relays"), which is how to find a part when you
-        know what it does but not its number. Results carry stock, unit price and whether the
-        part is basic (no assembly fee) or extended.
+        - `query`/`category`/`package`: search parts (`query` matches the manufacturer MPN;
+          `category` browses, e.g. "Relays").
+        - `categories=True`: list categories with stock counts (`query` filters the list).
+        - `mpn`/`lcsc`: verify one part - stock, price, tier and datasheet availability.
+        Results carry stock, unit price and whether the part is basic or extended.
         """
         from kicad_harness.engine import parts
 
         try:
+            if categories:
+                items = await asyncio.to_thread(parts.categories, query)
+                return ToolReturn(return_value={"ok": True, "categories": items})
+            if mpn or lcsc:
+                result = await asyncio.to_thread(parts.find_parts, mpn or "", lcsc)
+                result["ok"] = True
+                return ToolReturn(return_value=result)
             result = await asyncio.to_thread(
                 parts.search_jlc, query, category=category, package=package,
                 basic_only=basic_only, limit=limit,
@@ -1811,44 +1763,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         result["ok"] = True
         return ToolReturn(return_value=result)
 
-    @agent.tool(sequential=True)
-    async def draw_schematic_wires(ctx: RunContext[HarnessDeps]) -> ToolReturn:
-        """Draw visible wire stubs from every labelled pin out to its net label.
-
-        Generators place net labels exactly on pin anchors: correct electrically, but nothing is
-        drawn, so the sheet looks unwired. This wires pin -> label for every such pin and leaves
-        already-wired pins alone. Safe to call repeatedly.
-        """
-        return await _schematic_edit(
-            ctx, "draw_schematic_wires", "Draw wire stubs to net labels",
-            lambda d: {"stubs": d.draw_pin_stubs()},
-        )
-
     @agent.tool
-    async def part_categories(ctx: RunContext[HarnessDeps], term: str | None = None) -> ToolReturn:
-        """List JLCPCB part categories (optionally filtered, e.g. "relay") with how many are in stock."""
-        from kicad_harness.engine import parts
-
-        try:
-            items = await asyncio.to_thread(parts.categories, term)
-        except Exception as exc:
-            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
-        return ToolReturn(return_value={"ok": True, "categories": items})
-
-    @agent.tool
-    async def check_part(ctx: RunContext[HarnessDeps], mpn: str, lcsc: str | None = None) -> ToolReturn:
-        """Check one part before using it: JLCPCB stock/price/tier, plus datasheet availability from i2cdb."""
-        from kicad_harness.engine import parts
-
-        try:
-            result = await asyncio.to_thread(parts.check_part, mpn, lcsc)
-        except Exception as exc:
-            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
-        result["ok"] = True
-        return ToolReturn(return_value=result)
-
-    @agent.tool
-    async def part_datasheet(
+    async def read_part_datasheet(
         ctx: RunContext[HarnessDeps], mpn: str, manufacturer: str | None = None, pages: str | None = "1-6"
     ) -> ToolReturn:
         """Read a part's datasheet (markdown) to confirm pinout and ratings. Needs the manufacturer slug or MPN."""
@@ -1969,16 +1885,13 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     return agent
 
-
 _agent: Agent[HarnessDeps, str | DeferredToolRequests] | None = None
-
 
 def get_agent() -> Agent[HarnessDeps, str | DeferredToolRequests]:
     global _agent
     if _agent is None:
         _agent = build_agent()
     return _agent
-
 
 def usage_limits_for(goal: dict):
     """UsageLimits from a goal's budget."""

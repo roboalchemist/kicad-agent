@@ -91,7 +91,7 @@ export function ReviewTab({ onShowOnBoard }: { onShowOnBoard: (t: Thread) => voi
   const askAgent = async () => {
     const open = (h.threads ?? []).filter((t) => ["open", "reopened"].includes(t.status));
     if (!open.length) return;
-    const msg = `Please address the open review comments: ${open.map((t) => `#${t.number}`).join(", ")}. Use list_feedback to see them, fix the board, then mark each addressed.`;
+    const msg = `Please address the open review comments: ${open.map((t) => `#${t.number}`).join(", ")}. Use list_reviews to see them, fix the board, then mark each addressed.`;
     await sendAgentMessage(msg);
   };
 

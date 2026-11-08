@@ -90,10 +90,10 @@ async def test_edit_inspect_check_commits_versions(services, design):
     name, ws = design
     start = len(ws.log())
     script = Script([
-        [("design_summary", {})],
+        [("get_design", {})],
         [("move_footprint", {"ref": "D1", "x": 20.0, "y": 15.0})],
-        [("render_view", {"target": "D1", "highlight": ["D1"]})],
-        [("render_view", {"mode": "3d", "rotate": [-45, 0, 45]})],
+        [("render", {"target": "D1", "highlight": ["D1"]})],
+        [("render", {"mode": "3d", "rotate": [-45, 0, 45]})],
         [("check", {})],
         "done",
     ])
@@ -119,7 +119,7 @@ async def test_edit_inspect_check_commits_versions(services, design):
     images = [
         item
         for m in result.all_messages() if isinstance(m, ModelRequest)
-        for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name == "render_view" and isinstance(p.content, list)
+        for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name == "render" and isinstance(p.content, list)
         for item in p.content if isinstance(item, BinaryContent)
     ]
     assert len(images) == 2 and all(i.media_type == "image/png" and len(i.data) > 1000 for i in images)
@@ -169,14 +169,14 @@ async def test_goal_loop_keeps_the_agent_working(services, design):
 
 async def test_supervised_tools_wait_for_approval(services, design):
     name, ws = design
-    script = Script([[("delete_tracks", {"nets": ["OUTPUT"]})], "ripped up OUTPUT"])
+    script = Script([[("delete_board_items", {"nets": ["OUTPUT"]})], "ripped up OUTPUT"])
     agent = build_agent()
     deps = deps_for(services, name, supervised=True)
     with agent.override(model=script.model()):
         first = await agent.run("rip up OUTPUT", deps=deps)
         assert isinstance(first.output, DeferredToolRequests)
         call = first.output.approvals[0]
-        assert call.tool_name == "delete_tracks"
+        assert call.tool_name == "delete_board_items"
         assert len(ws.log()) == 1  # nothing happened yet
         second = await agent.run(
             message_history=first.all_messages(),
@@ -199,15 +199,15 @@ async def test_feedback_tools(services, design):
     thread = services.store.review.create(name, ws.head(), anchor, "LED too close to the edge", tags=["placement"],
                                           severity="must_fix")
     script = Script([
-        [("list_feedback", {})],
-        [("mark_addressed", {"number": thread["number"], "note": "moved inward"})],
+        [("list_reviews", {})],
+        [("mark_review_addressed", {"number": thread["number"], "note": "moved inward"})],
         "handled",
     ])
     agent = build_agent()
     with agent.override(model=script.model()):
         result = await agent.run("address feedback", deps=deps_for(services, name))
     listed = next(p for m in result.all_messages() if isinstance(m, ModelRequest) for p in m.parts
-                  if isinstance(p, ToolReturnPart) and p.tool_name == "list_feedback")
+                  if isinstance(p, ToolReturnPart) and p.tool_name == "list_reviews")
     assert listed.content["count"] == 1
     assert listed.content["threads"][0]["where"]["ref"] == "D1"
     assert listed.content["threads"][0]["where"]["anchor_state"] == "exact"
@@ -219,7 +219,7 @@ async def test_steering_reaches_a_running_agent(services, design):
     name, ws = design
     services.store.steering.push(name, "Also look closely at D1 please")
     script = Script([
-        [("design_summary", {})],
+        [("get_design", {})],
         [("query", {"kind": "footprint", "ref": "D1"})],
         "looked at D1",
     ])
@@ -244,7 +244,7 @@ async def test_server_agui_and_rest(services, design):
     app = create_app()
     script = Script([
         [("move_footprint", {"ref": "D1", "x": 20.0, "y": 15.0})],
-        [("render_view", {"target": "D1"})],
+        [("render", {"target": "D1"})],
         "moved",
     ])
     agent = build_agent()

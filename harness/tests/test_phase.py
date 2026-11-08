@@ -72,10 +72,10 @@ async def test_agent_draws_and_then_hands_off_to_layout(services, new_project):
         {"name": "GND", "pins": ["R2.2", "C1.2", "C2.2"]},
     ]
     script = Script([
-        [("schematic_summary", {})],
+        [("get_design", {})],
         [
             (
-                "generate_schematic_skidl",
+                "generate_schematic",
                 {
                     "parts": [
                         {"ref": "R1", **part},
@@ -87,8 +87,8 @@ async def test_agent_draws_and_then_hands_off_to_layout(services, new_project):
                 },
             )
         ],
-        [("check_schematic", {})],
-        [("start_board_layout", {})],
+        [("check", {})],
+        [("start_board", {})],
         "done",
     ])
     agent = build_agent()
@@ -145,7 +145,7 @@ async def test_schematic_tools_edit_and_commit(services, new_project):
             [("add_symbol", {"symbol": "Device:R", "ref": "R1", "x": 100.0, "y": 100.0})],
             [("add_symbol", {"symbol": "Device:R", "ref": "R2", "x": 120.0, "y": 100.0})],
             [("connect_pins", {"a": "R1.1", "b": "R2.1", "net": "MID"})],
-            [("add_schematic_label", {"name": "GND", "x": 100.0, "y": 110.0})],
+            [("label_net", {"target": "110.0,100.0", "net": "GND"})],
             "done",
         ]
     )
@@ -186,7 +186,7 @@ async def test_skidl_failure_returns_a_readable_error(services, new_project):
         [
             [
                 (
-                    "generate_schematic_skidl",
+                    "generate_schematic",
                     {
                         "parts": [{"ref": "U1", "library": "Timer", "symbol": "NE555NOTREAL", "value": "x"}],
                         "nets": [],
@@ -217,7 +217,7 @@ async def test_unreadable_schematic_is_reported_not_raised(services, new_project
     """A half-written schematic must come back as data, not exhaust the tool-retry budget."""
     name, ws = new_project
     ws.schematic_path.write_text("(kicad_sch (version 20250114)", encoding="utf-8")  # truncated
-    script = Script([[("schematic_summary", {})], "done"])
+    script = Script([[("get_design", {})], "done"])
     agent = build_agent()
     deps = deps_for(services, name)
     with agent.override(model=script.model()):
@@ -246,7 +246,7 @@ async def test_netless_regenerate_does_not_destroy_existing_wiring(services, new
             [("connect_pins", {"a": "R1.2", "b": "R2.1", "net": "MID"})],
             [
                 (
-                    "generate_schematic_skidl",
+                    "generate_schematic",
                     {"parts": [{"ref": "R9", "library": "Device", "symbol": "R", "value": "1k"}], "nets": []},
                 )
             ],
@@ -300,9 +300,9 @@ async def test_no_argument_tools_tolerate_stray_arguments(services, new_project)
     name, ws = new_project
     script = Script(
         [
-            [("schematic_summary", {"_": None})],
-            [("check_schematic", {})],
-            [("design_summary", {"junk": 1})],
+            [("get_design", {"_": None})],
+            [("check", {})],
+            [("get_design", {"junk": 1})],
             "done",
         ]
     )
@@ -316,8 +316,8 @@ async def test_no_argument_tools_tolerate_stray_arguments(services, new_project)
         p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "ToolReturnPart"
     ]
     assert len(returns) == 3, [getattr(r, "tool_name", "") for r in returns]
-    # design_summary answers in the schematic phase instead of failing on the missing board.
-    assert all(isinstance(r.content, dict) for r in returns), returns
+    # get_design answers in the schematic phase instead of failing on the missing board.
+    assert all(isinstance(r.content, (dict, list)) for r in returns), returns
 
 
 async def test_sse_probes_are_shared_between_subscribers():

@@ -349,7 +349,7 @@ Three further pieces let the agent finish a sheet itself rather than receive a f
   for 2-pin nets and rolls back any wire that changes the pin partition.
 
 The agent reaches these through `check_schematic_layout`, `tidy_schematic`, `route_schematic`
-and the edit tools (`move_schematic_symbol`, `set_symbol_value`, `disconnect_schematic`,
+and the edit tools (`move_symbol`, `set_symbol_value`, `disconnect_schematic`,
 `label_pin`); `route_schematic` also runs ERC before/after and reverts the whole edit if errors
 increase.
 
@@ -375,26 +375,33 @@ until `[legible]` passes.
   - The frontend sets `design`, `selection`, `loop` and `supervised`.
   - Tools update the rest and attach `StateSnapshotEvent`s to their `ToolReturn`, so the UI's board view reloads when `board_hash` changes.
 - **Auto-commit:** every editing tool, on success, commits one version (author agent, trailers: run, tool, tool call) and bumps `revision`/`head`/`board_hash`.
-- **Supervised mode:** when `supervised` is true, `delete_tracks`, `autoroute`, `set_board_outline`, `remove_footprint` and `restore_version` raise `ApprovalRequired` unless `ctx.tool_call_approved`.
+- **Supervised mode:** when `supervised` is true, `delete_board_items`, `autoroute`, `set_board_outline` and `restore_version` raise `ApprovalRequired` unless `ctx.tool_call_approved`.
 
 | Tool | Purpose / returns |
 |---|---|
-| `design_summary()` | Board size, components (ref, value, x, y, rotation, side), nets, DRC counts, goal status, open threads, head |
-| `query(kind, ref=None, net=None, region=None)` | Compact entity list from the index |
-| `measure(a, b)` | geometry.measure |
-| `check()` | DRC (normalized, top 30 items) + goal evaluation. Updates `state.goal` |
-| `render_view(target=None, x=None, y=None, view_mm=None, mode="2d", side="front", rotate=None, highlight=None, labels=True)` | **Image to the model** (`BinaryContent`) + caption. Sets `state.last_render` |
-| `list_feedback(status="open")` | Threads with anchors resolved to the current version (number, severity, tags, entity, location, body, replies) |
-| `reply_to_thread(number, message)`, `mark_addressed(number, note)` | Review actions as the agent. `mark_addressed` records the current head |
+| `get_design()` | Design summary (phase-aware): board outline/components/nets/DRC, or schematic symbols/nets/ERC/findings, plus goal and open threads |
+| `query(kind, ref=None, net=None, region=None)` | Compact board entity list from the index |
+| `measure(a, b)` | Edge-to-edge copper distance |
+| `check(detail=False)` | Phase-aware: schematic = ERC + legibility + findings + goal; board = DRC + unconnected + goal. Always returns the rendered artifact |
+| `render(kind="board", …)` | Image of the board (`target`, `mode`, `side`, `rotate`, `highlight`, `labels`) or the schematic sheet |
+| `list_reviews(status="open")` | Review threads with resolved anchors |
+| `reply_review(number, message)`, `mark_review_addressed(number, note)` | Review actions as the agent |
+| `get_design`, `set_goal`, `list_versions`, `restore_version` | Context, goal and history |
+| `read_reference(topic, section=None)` | The bundled PCB rule/reference for a topic |
+| `find_parts(query/category/package, categories=False, mpn/lcsc, basic_only)` | Search the catalogue, browse categories, or verify one part |
+| `read_part_datasheet(mpn, lcsc=None)` | Datasheet text for a part |
+| `generate_schematic(parts, nets)`, `add_symbol`, `move_symbol`, `set_symbol_value` | Draw/repair a schematic; `get_design` reports it |
+| `connect_pins(a, b, net)`, `label_net(target, net)` | Pin-to-pin wire; net on a pin (`U1.3`) or point (`x,y`) |
+| `delete_schematic_items(nets, refs)` | Remove a net's wires/labels or a symbol and its wires |
+| `tidy_schematic(paper=None)`, `route_schematic(max_mm=300)` | Circuit-flow placement; validated point-to-point wires |
+| `start_board()` | Create the board from the finished netlist |
 | `move_footprint(ref, x, y, rotation=None)`, `rotate_footprint(ref, angle)`, `flip_footprint(ref)` | Placement edits |
-| `move_reference_text(ref, x, y)` | Silkscreen |
-| `delete_tracks(nets=None)`, `delete_items(uuids)` | Rip-up |
+| `delete_board_items(nets, refs, uuids)` | Rip up nets, remove parts, or delete specific items |
 | `add_track(net, points, width=0.25, layer="F.Cu")`, `add_via(x, y, net)` | Manual routing |
 | `autoroute(timeout_s=120)` | Freerouting |
 | `set_board_outline(width, height, corner_radius=0)` | Outline |
 | `add_copper_zone(net, layer, margin=0.5)`, `refill_zones()` | Pours |
-| `add_footprint(footprint, ref, value, x, y, rotation=0, side="front", pad_nets={})`, `remove_footprint(ref)`, `set_pad_net(ref, pad, net)`, `find_footprints(query)` | Parts |
-| `list_versions(limit=20)`, `restore_version(sha)` | History |
+| `add_footprint(...)`, `find_footprints(query)` | Parts |
 
 - **Frontend tools**, defined in the browser and offered to the model through AG-UI:
   - `focus_view(target, view_mm=None)`
@@ -565,7 +572,7 @@ These texts are not just documentation; they are applied to every run:
   - `render_view`: the image from `result[0].url` plus its caption.
   - `check`: a criteria pass/fail table and DRC counts.
   - Editing tools: one line with the new version short SHA, which links to that version.
-  - `list_feedback`: thread chips.
+  - `list_reviews`: thread chips.
   - Everything else: a default card (name, args, result).
 - **Approvals:** an approval card (Approve / Reject) when supervised tools pause.
 - **"Run goal" button:** sends "Work toward the goal; stop when every criterion passes." with loop on.

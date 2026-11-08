@@ -89,20 +89,20 @@ async def test_board_tools_refuse_with_data_not_retries(services, new_project):
     name, _ws = new_project
     calls = [("query", {"kind": "footprint"})] * 3
     calls += [("measure", {"a": "R1.1", "b": "R1.2"})] * 3
-    calls += [("list_feedback", {}), ("check", {})]
+    calls += [("list_reviews", {})]
     script = Script([calls, "done"])
     agent = build_agent()
     deps = deps_for(services, name)
     with agent.override(model=script.model()):
         result = await agent.run("poke board tools", deps=deps)
 
-    assert result.output == "done", "the run must survive 8 board-tool refusals"
+    assert result.output == "done", "the run must survive 7 board-tool refusals"
     returns = [
         p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "ToolReturnPart"
     ]
-    assert len(returns) == 8, [getattr(r, "tool_name", "") for r in returns]
+    assert len(returns) == 7, [getattr(r, "tool_name", "") for r in returns]
     for r in returns:
-        assert isinstance(r.content, dict), r.content
+        assert isinstance(r.content, (dict, list)), r.content
         assert r.content.get("ok") is False, r.content
         assert "schematic phase" in r.content.get("error", ""), r.content
 
