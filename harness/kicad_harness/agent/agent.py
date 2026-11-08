@@ -1350,6 +1350,59 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
+    async def move_schematic_symbol(
+        ctx: RunContext[HarnessDeps], ref: str, x: float, y: float, rotation: float | None = None
+    ) -> ToolReturn:
+        """Move a schematic symbol to (x, y) mm, optionally rotating it. The reference/value text moves with it."""
+        return await _schematic_edit(
+            ctx, "move_schematic_symbol", f"Move {ref} to ({x:g}, {y:g})",
+            lambda d: {"moved": bool(d.move_symbol(ref, x, y, rotation))},
+        )
+
+    @agent.tool(sequential=True)
+    async def set_symbol_value(ctx: RunContext[HarnessDeps], ref: str, value: str) -> ToolReturn:
+        """Change a symbol's Value. For a power symbol this changes the net it names — use it to
+        fix a symbol whose value contradicts the net it is wired to, e.g. a GND symbol on +5V."""
+        return await _schematic_edit(
+            ctx, "set_symbol_value", f"Set {ref} value to {value}",
+            lambda d: {"changed": bool(d.set_symbol_value(ref, value))},
+        )
+
+    @agent.tool(sequential=True)
+    async def disconnect_schematic(ctx: RunContext[HarnessDeps], net: str | None = None,
+                                   ref: str | None = None) -> ToolReturn:
+        """Remove wires (and, for a net, its labels) so a wrong connection can be redone:
+        pass net="NAME" to clear that net, or ref="R1" to clear every wire touching R1's pins."""
+        if not net and not ref:
+            return ToolReturn(return_value={"ok": False, "error": "give a net or a ref"})
+        return await _schematic_edit(
+            ctx, "disconnect_schematic", f"Disconnect {net or ref}",
+            lambda d: {"removed": d.remove_wires(net=net, reference=ref)},
+        )
+
+    @agent.tool(sequential=True)
+    async def label_pin(ctx: RunContext[HarnessDeps], pin: str, net: str) -> ToolReturn:
+        """Attach a net to one pin (e.g. "U1.3") with a short stub and a label, without needing a partner pin."""
+        try:
+            ref, number = _split_pin(pin)
+        except ValueError as exc:
+            raise ModelRetry(str(exc)) from exc
+
+        def work(doc) -> dict:
+            placement = doc._placement(ref)
+            if placement is None:
+                return {"ok": False, "error": f"no symbol {ref!r}"}
+            point = doc.pin_position(placement, number)
+            if point is None:
+                return {"ok": False, "error": f"{ref} has no pin {number}"}
+            end = (point[0] + 3.81, point[1])
+            doc.add_wire([point, end])
+            doc.add_label(net, *end, anchor="left")
+            return {"ok": True, "pin": pin, "net": net}
+
+        return await _schematic_edit(ctx, "label_pin", f"Label {pin} as {net}", work)
+
+    @agent.tool(sequential=True)
     async def add_schematic_label(
         ctx: RunContext[HarnessDeps], name: str, x: float, y: float, global_: bool = False
     ) -> ToolReturn:

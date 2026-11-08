@@ -810,6 +810,46 @@ class Schematic:
                     prop_at[2] = num(float(prop_at[2]) + dy)
         return True
 
+    def set_symbol_value(self, reference: str, value: str) -> bool:
+        """Change a symbol's Value (for a power symbol, that is its net name)."""
+        node = self._symbol_node(reference)
+        if node is None:
+            return False
+        for prop in find_all(node, "property"):
+            if len(prop) > 2 and str(prop[1]) == "Value":
+                prop[2] = value
+                return True
+        return False
+
+    def remove_wires(self, *, net: str | None = None, reference: str | None = None) -> int:
+        """Delete the wires of ``net`` (with its labels), or every wire touching a symbol's pins."""
+        removed = 0
+        pins: set[tuple[float, float]] = set()
+        if reference:
+            placement = self._placement(reference)
+            symbol = self.lookup(placement.lib_id) if placement else None
+            if placement and symbol:
+                for number in symbol.pins:
+                    point = self.pin_position(placement, number)
+                    if point:
+                        pins.add(NetNode(*point).key())
+        keep = []
+        for child in self.tree:
+            if isinstance(child, list) and child and child[0] == "wire":
+                pts = find_one(child, "pts")
+                ends = {NetNode(float(q[1]), float(q[2])).key()
+                        for q in find_all(pts, "xy")} if pts else set()
+                if (net is not None and self.wire_net(child) == net) or (pins and ends & pins):
+                    removed += 1
+                    continue
+            if (net is not None and isinstance(child, list) and child
+                    and child[0] in ("label", "global_label") and str(child[1]) == net):
+                removed += 1
+                continue
+            keep.append(child)
+        self.tree[:] = keep
+        return removed
+
     def add_no_connect(self, x: float, y: float) -> list:
         """Mark a pin as deliberately unconnected (KiCad's no-connect cross)."""
         node = ["no_connect", ["at", num(snap(x)), num(snap(y))], ["uuid", Q(new_uuid())]]
