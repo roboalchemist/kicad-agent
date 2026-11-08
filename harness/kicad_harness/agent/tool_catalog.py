@@ -48,6 +48,8 @@ TOOLS: dict[str, tuple[str, str]] = {
     "start_board": ("schematic", "Only after ERC 0 and legible 0: create the board from the netlist."),
     # -- board ----------------------------------------------------------------------------
     "set_board_outline": ("board", "Set the mechanical outline first; everything else depends on it."),
+    "set_component_height": ("board", "Record a part height from its datasheet so the enclosure fit can be checked."),
+    "set_enclosure": ("board", "Declare the enclosure height and PCB-to-lid clearance; check reports over-height and unmeasured parts."),
     "set_net_class": ("board", "Declare width/clearance/impedance per net group; new tracks use it and check flags narrower ones."),
     "set_stackup": ("board", "Declare copper layers, material, er/height and impedance; check compares it with the board."),
     "add_keepout": ("board", "Rule-area keepout: no tracks/vias/pours inside the polygon."),
@@ -184,6 +186,12 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
                    "the enclosure.",
          "tools": ["set_board_outline"], "gate": "outline and holes match the mechanics",
          "ref": "pcb-mechanical#Board Outline"},
+        {"step": "Record heights and enclosure",
+         "detail": "Every part's height comes from its datasheet; the enclosure height minus the "
+                   "PCB-to-lid clearance is the allowed height. Unmeasured parts fail the check.",
+         "tools": ["set_component_height", "set_enclosure", "check"],
+         "gate": "every part measured and inside the enclosure",
+         "ref": "pcb-mechanical#Component Height & Enclosure"},
         {"step": "Place fixed parts first",
          "detail": "Connectors, mounting holes and test points are anchors; they define the routing "
                    "topology.",

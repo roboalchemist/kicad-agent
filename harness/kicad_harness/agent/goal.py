@@ -39,6 +39,7 @@ CRITERIA: dict[str, tuple[tuple[str, ...], str]] = {
     "schematic_legibility": (("max",), "schematic layout violations <= {max}"),
     "manufacturing": ((), "manufacturing package present and current"),
     "layout_metric": (("metric", "max"), "layout metric {metric} <= {max}"),
+    "height": ((), "component heights measured and inside the declared enclosure"),
 }
 
 Measure = Callable[[dict, str, str], dict]
@@ -252,6 +253,24 @@ def evaluate_criterion(
                               detail=("package present and current" if ok else
                                       ("no manufacturing package" if not mfg.get("present")
                                        else "manufacturing package is older than the board")))
+        elif ctype == "height":
+            report = (drc or {}).get("heights")
+            if not isinstance(report, dict):
+                result.update(value=None, passed=False, detail="component heights were not measured")
+            else:
+                missing = report.get("missing") or []
+                over = report.get("over") or []
+                if report.get("enclosure_mm") is None:
+                    detail = "no enclosure height declared; record heights and call set_enclosure"
+                elif over:
+                    detail = (f"{len(over)} part(s) exceed {report.get('allowed_mm')} mm: "
+                              + ", ".join(f"{item['ref']} {item['height_mm']} mm" for item in over[:4]))
+                elif missing:
+                    detail = f"{len(missing)} part(s) have no recorded height: {', '.join(missing[:6])}"
+                else:
+                    detail = (f"tallest {report.get('tallest_mm')} mm <= {report.get('allowed_mm')} mm "
+                              "under the enclosure")
+                result.update(value=report, passed=bool(report.get("ok")), detail=detail)
         elif ctype == "layout_metric":
             metrics = (drc or {}).get("schematic_metrics") or {}
             value = metrics.get(c.get("metric"))

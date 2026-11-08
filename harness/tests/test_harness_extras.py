@@ -128,8 +128,20 @@ def test_goal_manufacturing_and_layout_metric_criteria() -> None:
     assert mfg["passed"] is True and align["passed"] is True
     stale = goal.evaluate(authored, {}, {"manufacturing": {"present": True, "stale": True},
                                          "schematic_metrics": {"alignment_ratio": 0.2}}, [])
+    assert stale
     assert next(c for c in stale["criteria"] if c["id"] == "mfg")["passed"] is False
     assert next(c for c in stale["criteria"] if c["id"] == "align")["passed"] is False
+
+    height_goal = {"criteria": [{"id": "fit", "type": "height"}]}
+    fits = goal.evaluate(height_goal, {}, {"heights": {"ok": True, "allowed_mm": 5.0,
+                                                       "tallest_mm": 1.2, "missing": [],
+                                                       "over": [], "enclosure_mm": 10.0}}, [])
+    assert fits["criteria"][0]["passed"] is True
+    unmeasured = goal.evaluate(height_goal, {}, {"heights": {"ok": False, "allowed_mm": 5.0,
+                                                             "missing": ["U1"], "over": [],
+                                                             "enclosure_mm": 10.0}}, [])
+    assert unmeasured["criteria"][0]["passed"] is False
+    assert "U1" in unmeasured["criteria"][0]["detail"]
 
 
 def test_testpoint_symbol_and_footprint_share_a_reference(tmp_path, engine, board) -> None:
@@ -272,3 +284,39 @@ def test_test_coverage_counts_nets_with_test_points() -> None:
     ]}
     report = balance.test_coverage(index)
     assert report == {"test_points": 1, "nets": 2, "covered": 1, "coverage": 0.5}
+
+def test_height_report_flags_over_and_unmeasured_parts() -> None:
+    from kicad_harness.engine import heights
+
+    index = {"footprints": [{"ref": "R1"}, {"ref": "R2"}, {"ref": "U1"}]}
+    data = {"parts": {"R1": {"height_mm": 1.0}, "R2": {"height_mm": 6.0}},
+            "enclosure": {"height_mm": 10.0, "clearance_mm": 5.0}}
+    report = heights.report(index, data)
+    assert report["allowed_mm"] == 5.0 and report["tallest_mm"] == 6.0
+    assert [item["ref"] for item in report["over"]] == ["R2"]
+    assert report["missing"] == ["U1"] and report["ok"] is False
+    assert report["rule"] == "pcb-mechanical#Component Height & Enclosure"
+
+    data["parts"]["U1"] = {"height_mm": 1.2}
+    del data["parts"]["R2"]
+    data["parts"]["R2"] = {"height_mm": 4.0}
+    assert heights.report(index, data)["ok"] is True
+
+
+def test_via_stub_is_estimated_for_a_through_via_on_a_four_layer_board() -> None:
+    from kicad_harness.engine import design_rules, si
+
+    rules = design_rules.load(SimpleNamespace(path=Path("/tmp/none")))
+    rules["netclasses"]["HS"] = {"nets": ["CLK"], "width": 0.2, "clearance": 0.2,
+                                 "impedance": 50, "explicit": True}
+    rules["stackup"] = {"layers": 4, "material": "FR4", "thickness": 1.6,
+                        "er": 4.4, "dielectric_height": 0.2}
+    index = {"board": {"layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]},
+             "tracks": [{"net": "CLK", "layer": "F.Cu"}],
+             "vias": [{"uuid": "v1", "net": "CLK", "type": "through"}]}
+    report = si.report(index, rules)
+    assert report["max_mm"] == 1.6 and report["ok"] is False
+    assert report["over"][0]["net"] == "CLK"
+    assert report["net_stub_mm"]["CLK"] == 1.6
+    index["vias"] = [{"uuid": "v2", "net": "CLK", "type": "micro"}]
+    assert si.report(index, rules)["ok"] is True

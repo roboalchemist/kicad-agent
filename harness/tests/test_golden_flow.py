@@ -46,6 +46,12 @@ async def test_draw_tidy_route_board_and_manufacture(services, new_project) -> N
         [("check", {})],
         [("start_board", {})],
         [("set_board_outline", {"width": 200.0, "height": 150.0, "x": 0.0, "y": 0.0})],
+        [("set_component_height", {"ref": "R1", "height_mm": 0.6})],
+        [("set_component_height", {"ref": "R2", "height_mm": 0.6})],
+        [("set_component_height", {"ref": "C1", "height_mm": 0.6})],
+        [("set_component_height", {"ref": "C2", "height_mm": 0.6})],
+        [("set_enclosure", {"height_mm": 10.0, "clearance_mm": 5.0})],
+        [("check", {})],
         "done",
     ])
     agent = build_agent()
@@ -67,8 +73,16 @@ async def test_draw_tidy_route_board_and_manufacture(services, new_project) -> N
                 if isinstance(payload, dict):
                     checks.append(payload)
     assert checks, "check never ran"
-    assert checks[-1]["erc"]["errors"] == 0, checks[-1]["erc"]
-    assert checks[-1]["layout"]["score"] == 0, checks[-1]["layout"]["counts"]
+    schematic_checks = [payload for payload in checks if payload.get("phase") == "schematic"]
+    board_checks = [payload for payload in checks if payload.get("phase") == "board"]
+    assert schematic_checks and board_checks, [c.get("phase") for c in checks]
+    assert schematic_checks[-1]["erc"]["errors"] == 0, schematic_checks[-1]["erc"]
+    assert schematic_checks[-1]["layout"]["score"] == 0, schematic_checks[-1]["layout"]["counts"]
+    heights = board_checks[-1]["heights"]
+    assert heights["ok"] is True, heights
+    assert heights["missing"] == [] and heights["over"] == []
+    assert heights["allowed_mm"] == 5.0 and heights["tallest_mm"] == 0.6
+    assert board_checks[-1]["via_stubs"]["ok"] is True, board_checks[-1]["via_stubs"]
 
     doc = Schematic.load(ws.schematic_path)
     assert {p.reference for p in doc.placements() if not p.reference.startswith("#")} == {

@@ -1472,6 +1472,7 @@ def create_app() -> FastAPI:
                 ws.goal(), {}, {"erc_counts": erc_counts,
                                 "schematic_metrics": metrics,
                                 "manufacturing": None,
+                                "heights": None,
                                 "board_laid_out": ws.board_path.is_file(),
                                 "schematic_missing": parts["missing_from_schematic"],
                                 "board_missing": parts["missing_from_board"],
@@ -1518,11 +1519,18 @@ def create_app() -> FastAPI:
                     lambda: layout_metrics_mod.metrics(_Schematic.load(ws.schematic_path)))
             except Exception:
                 metrics = None
+        from kicad_harness.engine import heights as heights_mod
+
+        try:
+            height_report = await asyncio.to_thread(
+                lambda: heights_mod.report(index, heights_mod.load(ws)))
+        except Exception:
+            height_report = None
         drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
                "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
                "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"],
                "schematic_layout": layout_report, "schematic_metrics": metrics,
-               "manufacturing": mfg}
+               "manufacturing": mfg, "heights": height_report}
         return goals.evaluate(ws.goal(), index, drc, svc.store.review.list(design))
 
     # ------------------------------------------------------------------ steering (messages mid-run)

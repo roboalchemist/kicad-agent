@@ -608,5 +608,8 @@ These texts are not just documentation; they are applied to every run:
   `import_outline` and `add_keepout` apply them.
 - Every tool result is wrapped at build time as `{ok, data|error, version}`; image results are a
   list whose first element is that envelope and whose remaining elements are attachments.
-- Goal criteria include `manufacturing` and `layout_metric`, evaluated from the same facts the
-  server and CLI compute.
+- Goal criteria include `manufacturing`, `layout_metric` and `height`, evaluated from the same
+  facts the server and CLI compute.
+- `engine/heights.py` stores per-part heights and the enclosure, and reports over-height and
+  unmeasured parts; `engine/si.py` estimates through-via stubs against
+  `pcb-high-speed#Via Stubs & Back-Drilling`.

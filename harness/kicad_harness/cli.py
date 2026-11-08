@@ -326,6 +326,7 @@ def _eval_inputs(svc, ws, name):
             "schematic_layout": layout_report,
             "schematic_metrics": metrics,
             "manufacturing": None,
+            "heights": None,
         }, threads
 
     board_hash, _ = svc.artifacts.materialize(ws.board_path.read_bytes())
@@ -363,11 +364,17 @@ def _eval_inputs(svc, ws, name):
             metrics = layout_metrics_mod.metrics(_Schematic.load(ws.schematic_path))
         except Exception:
             metrics = None
+    from kicad_harness.engine import heights as heights_mod
+
+    try:
+        height_report = heights_mod.report(index, heights_mod.load(ws))
+    except Exception:
+        height_report = None
     drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
            "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
            "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"],
            "schematic_layout": layout_report, "schematic_metrics": metrics,
-           "manufacturing": mfg}
+           "manufacturing": mfg, "heights": height_report}
     return svc.artifacts.index(board_hash), drc, threads
 
 

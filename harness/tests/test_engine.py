@@ -105,7 +105,8 @@ def test_index_shape(fixture_index):
     assert set(t) == {"uuid", "net", "layer", "x1", "y1", "x2", "y2", "width"}
     assert {t["layer"] for t in idx["tracks"]} == {"F.Cu", "B.Cu"}
     via = next(v for v in idx["vias"] if v["x"] == 12.305)
-    assert via == {"uuid": via["uuid"], "net": "VCC", "x": 12.305, "y": 12.57, "size": 0.6, "drill": 0.3}
+    assert via == {"uuid": via["uuid"], "net": "VCC", "x": 12.305, "y": 12.57, "size": 0.6,
+                   "drill": 0.3, "type": "through", "layers": ["F.Cu", "B.Cu"]}
 
     uuids = all_uuids(idx)
     assert len(uuids) == len(set(uuids)) and all(UUID.match(u) for u in uuids)
@@ -190,7 +191,8 @@ def test_add_track_and_via(engine, board):
 
     via = engine.add_via(board, 3, 3.5, "VCC", size=0.8, drill=0.4)["uuid"]
     v = next(v for v in engine.index(board)["vias"] if v["uuid"] == via)
-    assert v == {"uuid": via, "net": "VCC", "x": 3.0, "y": 3.5, "size": 0.8, "drill": 0.4}
+    assert v == {"uuid": via, "net": "VCC", "x": 3.0, "y": 3.5, "size": 0.8, "drill": 0.4,
+                 "type": "through", "layers": ["F.Cu", "B.Cu"]}
 
 
 def test_set_outline(engine, board):

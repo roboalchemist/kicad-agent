@@ -148,8 +148,8 @@ thermal), plus knowledge search.
 | Manufacturing export + gate | **done** — Gerbers, Excellon drill, pick-and-place, BOM and manifest; `check` reports presence/staleness; `manufacturing` goal criterion. |
 | Generator regression | **done** — the bundled golden flow draws from scratch, and `generate` now verifies the produced netlist *and* each PWR_FLAG's net, retrying when skidl's stochastic router shorts two nets or parks a flag on the wrong one. |
 | Connection retry | **done** — `stream_with_token_retry` retries provider connection errors with backoff. |
-| High-speed | **done** — `route_diff_pair`, `match_length`, via types (through/micro/blind/buried) and `add_via_stitching`. No serpentine generator. |
-| Mechanical outline | **done for wireframes** — polygon outline, `import_outline` for DXF (LWPOLYLINE/LINE) and STEP (EDGE_CURVE lines and sampled arcs), `add_keepout` rule areas, `add_cutout` circular holes and `add_mounting_holes` (four corner holes with copper keepouts). STEP B-spline edges are approximated by their endpoints. |
+| High-speed | **done** — `route_diff_pair`, `match_length`, via types (through/micro/blind/buried), `add_via_stitching`, and a via-stub estimate in `check` (`via_stubs`) and `match_length` (`via_stub_mm`): through-via barrel below the lowest used layer, limited to 15 mil for impedance-classed nets. No serpentine generator. |
+| Mechanical outline | **done for wireframes** — polygon outline, `import_outline` for DXF (LWPOLYLINE/LINE) and STEP (EDGE_CURVE lines and sampled arcs), `add_keepout` rule areas, `add_cutout` circular holes, `add_mounting_holes` (four corner holes with copper keepouts), and a component-height/enclosure fit check (`set_component_height`, `set_enclosure`, `heights` in `check`, `height` goal criterion). STEP B-spline edges are approximated by their endpoints. |
 | Silkscreen automation | **done** — collision-aware `place_silkscreen`. |
 | Test points | **done** — end-to-end test: one symbol + one footprint per net with the same reference, pad on the net; `check` reports `test_coverage` (nets with a TP, ratio). |
 | Thermal vias / copper balance | **done** — `add_thermal_vias`, `add_via_stitching`, and a copper-balance estimate (front/back area and ratio) in `check`. |
@@ -169,4 +169,5 @@ thermal), plus knowledge search.
 - Netclass *track width* is a harness check because KiCad DRC only enforces a board-wide minimum
   (which this code lowers to the weakest declared class).
 - No automatic serpentine/length tuning; `match_length` reports and `route_diff_pair` routes.
-- No component height/clearance check: that needs 3D models per footprint.
+- Component heights are declared from datasheets (`set_component_height`), because footprints
+  carry no reliable height; the check fails when parts are unmeasured rather than assuming.

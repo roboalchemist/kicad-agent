@@ -438,6 +438,13 @@ def _track_entry(t):
 
 def _via_entry(v):
     p = v.GetPosition()
+    kind = {
+        getattr(pcbnew, "VIATYPE_THROUGH", -1): "through",
+        getattr(pcbnew, "VIATYPE_BLIND", -2): "blind",
+        getattr(pcbnew, "VIATYPE_BURIED", -3): "buried",
+        getattr(pcbnew, "VIATYPE_BLIND_BURIED", -4): "blind",
+        getattr(pcbnew, "VIATYPE_MICROVIA", -5): "micro",
+    }.get(v.GetViaType(), "through")
     return {
         "uuid": v.m_Uuid.AsString(),
         "net": v.GetNetname(),
@@ -445,6 +452,8 @@ def _via_entry(v):
         "y": _mm(p.y),
         "size": _mm(v.GetWidth(v.TopLayer())),
         "drill": _mm(v.GetDrillValue()),
+        "type": kind,
+        "layers": [_layer_name(v.TopLayer()), _layer_name(v.BottomLayer())],
     }
 
 
@@ -802,7 +811,12 @@ def add_via(board, x, y, net, size=0.6, drill=0.3, via_type="through", layers=No
             else:
                 v.SetLayerPair(copper[0], copper[1])
         else:
-            v.SetViaType(pcbnew.VIATYPE_BLIND_BURIED)
+            blind = getattr(pcbnew, "VIATYPE_BLIND", None)
+            buried = getattr(pcbnew, "VIATYPE_BURIED", None)
+            if blind is not None and buried is not None:
+                v.SetViaType(blind if kind == "blind" else buried)
+            else:  # older KiCad had one combined type
+                v.SetViaType(getattr(pcbnew, "VIATYPE_BLIND_BURIED"))
             if not layers or len(layers) != 2:
                 raise RpcError("InvalidParams", "%s via needs layers=[from, to]" % kind)
             v.SetLayerPair(_copper_layer(b, layers[0]), _copper_layer(b, layers[1]))

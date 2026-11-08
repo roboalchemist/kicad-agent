@@ -193,6 +193,7 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
             "schematic_layout": await asyncio.to_thread(_schematic_layout_facts, ws),
             "schematic_metrics": await asyncio.to_thread(_schematic_metrics_facts, ws),
             "manufacturing": None,
+            "heights": None,
         }
         evaluation = goals.evaluate(ws.goal(), {}, fake, threads)
         ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
@@ -220,6 +221,7 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
         "schematic_layout": await asyncio.to_thread(_schematic_layout_facts, ws),
         "schematic_metrics": await asyncio.to_thread(_schematic_metrics_facts, ws),
         "manufacturing": await asyncio.to_thread(_manufacturing_facts, ws),
+        "heights": await asyncio.to_thread(_height_facts, ws, index),
     }
     evaluation = goals.evaluate(ws.goal(), index, drc, threads)
     ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
@@ -261,6 +263,15 @@ def _schematic_metrics_facts(ws) -> dict[str, Any] | None:
         return None
     try:
         return layout.metrics(Schematic.load(ws.schematic_path))
+    except Exception:
+        return None
+
+
+def _height_facts(ws, index: dict[str, Any]) -> dict[str, Any] | None:
+    from kicad_harness.engine import heights
+
+    try:
+        return heights.report(index, heights.load(ws))
     except Exception:
         return None
 
@@ -1039,12 +1050,15 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         board_hash, _ = await _working(ctx)
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
         evaluation = await _evaluate(ctx)
-        from kicad_harness.engine import balance, design_rules, manufacturing
+        from kicad_harness.engine import balance, design_rules, heights, manufacturing, si
 
         index = await asyncio.to_thread(svc.artifacts.index, board_hash)
         rules = await asyncio.to_thread(design_rules.load, ws)
         rule_violations = await asyncio.to_thread(design_rules.violations, index, rules)
         mfg = await asyncio.to_thread(manufacturing.status, ws)
+        height_report = await asyncio.to_thread(
+            lambda: heights.report(index, heights.load(ws)))
+        stub_report = await asyncio.to_thread(si.report, index, rules)
 
         def brief(v: dict) -> dict:
             return {
@@ -1085,6 +1099,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             "manufacturing": mfg,
             "copper_balance": balance.report(index),
             "test_coverage": balance.test_coverage(index),
+            "heights": height_report,
+            "via_stubs": stub_report,
             "schematic": schematic_report,
         }
         try:
@@ -1466,7 +1482,10 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
     @agent.tool
     async def match_length(ctx: RunContext[HarnessDeps], nets: list[str],
                            tolerance_mm: float = 1.0) -> ToolReturn:
-        """Report the routed length of each net and whether they match within `tolerance_mm`."""
+        """Report each net's routed length, whether the group matches within `tolerance_mm`, and
+        the worst via stub per net (a length match is meaningless if one net has a long stub)."""
+        from kicad_harness.engine import design_rules, si
+
         board_hash, index = await _working(ctx)
         lengths: dict[str, float] = {}
         for net in nets:
@@ -1476,6 +1495,9 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                     continue
                 total += math.dist((track["x1"], track["y1"]), (track["x2"], track["y2"]))
             lengths[net] = round(total, 2)
+        stub_report = si.report(index, design_rules.load(_ws(ctx)))
+        by_net = stub_report.get("net_stub_mm") or {}
+        stubs = {net: float(by_net.get(net, 0.0)) for net in nets}
         values = list(lengths.values())
         delta = round(max(values) - min(values), 2) if values else 0.0
         return ToolReturn(return_value={
@@ -1484,6 +1506,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             "delta_mm": delta,
             "tolerance_mm": tolerance_mm,
             "matched": bool(values) and delta <= tolerance_mm,
+            "via_stub_mm": {net: round(value, 3) for net, value in stubs.items()},
+            "stub_limit_mm": stub_report.get("limit_mm"),
         })
 
     def _boxes_overlap(a, b) -> bool:
@@ -2321,6 +2345,33 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         data[ref] = sorted({code.strip().upper() for code in lcscs if code.strip()})
         path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return ToolReturn(return_value={"ok": True, "ref": ref, "alternates": data[ref]})
+
+    @agent.tool
+    async def set_component_height(ctx: RunContext[HarnessDeps], ref: str, height_mm: float,
+                                   source: str | None = None) -> ToolReturn:
+        """Record a part's height from its datasheet (mm above the board). `check` compares it
+        with the enclosure and flags parts whose height was never measured."""
+        from kicad_harness.engine import heights
+
+        ws = _ws(ctx)
+        if height_mm <= 0:
+            return ToolReturn(return_value={"ok": False, "error": "height_mm must be positive"})
+        entry = await asyncio.to_thread(heights.set_part, ws, ref, height_mm, source)
+        return ToolReturn(return_value={"ok": True, **entry})
+
+    @agent.tool
+    async def set_enclosure(ctx: RunContext[HarnessDeps], height_mm: float,
+                            clearance_mm: float = 5.0) -> ToolReturn:
+        """Declare the internal enclosure (lid) height and the PCB-to-lid clearance.
+        pcb-mechanical#Component Height & Enclosure calls for 5-10 mm; `check` then reports
+        over-height and unmeasured parts."""
+        from kicad_harness.engine import heights
+
+        ws = _ws(ctx)
+        if height_mm <= 0:
+            return ToolReturn(return_value={"ok": False, "error": "height_mm must be positive"})
+        entry = await asyncio.to_thread(heights.set_enclosure, ws, height_mm, clearance_mm)
+        return ToolReturn(return_value={"ok": True, **entry})
 
     @agent.tool
     async def set_part_lifecycle(ctx: RunContext[HarnessDeps], ref: str, msl: int | None = None,
