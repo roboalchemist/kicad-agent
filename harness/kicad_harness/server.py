@@ -697,6 +697,24 @@ def create_app() -> FastAPI:
             svc.store.conn.execute("COMMIT")
         return {"name": new, "directory": str(target)}
 
+    @app.post("/api/designs/{design}/duplicate")
+    async def duplicate_design(request: Request, design: str, body: dict = Body(...)):
+        """Copy a project (including its history) to a new name."""
+        import shutil as _shutil
+
+        from kicad_harness.store.workspace import Workspace
+
+        svc = _svc(request)
+        ws = _workspace(svc, design)
+        new = str(body.get("name") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", new or ""):
+            raise HTTPException(400, "name must be letters, digits, _ . -")
+        if Workspace.exists(svc.config, new):
+            raise HTTPException(409, f"design {new!r} exists")
+        target = Path(svc.config.workspaces) / new
+        await asyncio.to_thread(_shutil.copytree, ws.path, target, symlinks=True)
+        return {"name": new, "directory": str(target)}
+
     @app.delete("/api/designs/{design}")
     async def delete_design(request: Request, design: str, confirm: bool = False):
         """Delete a project and its history. Requires `?confirm=1`."""

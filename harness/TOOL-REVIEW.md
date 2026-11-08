@@ -140,24 +140,32 @@ outline import, manufacturing export, BOM lifecycle, silkscreen automation, test
 thermal), plus knowledge search.
 
 
-## Implementation status (after `a0fb875`)
+## Implementation status (final)
 
 | Recommendation | Status |
 |---|---|
-| Net classes + stackup | **done** — `set_net_class`, `set_stackup`, `add_track` uses the class width, `check` reports width/stackup violations |
-| Manufacturing export + gate | **done** — package + manifest; `check` reports presence/staleness; `manufacturing` goal criterion |
-| Generator fix | **covered by tests** — scripted end-to-end draw test passes; no dedicated regression on the skidl cache |
-| Connection retry | **done** — `stream_with_token_retry` retries provider connection errors |
-| Diff pairs / length match | **partial** — `route_diff_pair` (parallel tracks), `match_length` (report); no serpentine adjustment, no impedance check |
-| Mechanical outline | **done except STEP** — polygon outline, `import_outline` DXF (LWPOLYLINE/LINE) and `add_keepout` rule areas |
-| Silkscreen automation | **done** — `place_silkscreen` collision-aware reference placement |
-| Test points | **done** — `place_test_points` adds a symbol and footprint with the same ref; engine/symbol test |
-| Thermal vias | **done** — `add_thermal_vias` |
-| BOM lifecycle | **partial** — `set_bom_alternates` + alternates column in the BOM; no MSL/lead-time fields |
-| Layout metrics | **done** — owner distance, alignment, wire length, crossings, utilisation; `layout_metric` goal criterion |
-| Netlist/BOM diff | **done** — `diff_versions` |
-| Uniform tool contract | **partial** — checks/summaries/read tools carry `ok`; image results remain a list |
-| Playbook once per run | **done** |
-| Knowledge sync + search | **done** — drift test + `read_reference(query=...)` |
-| Golden regression suite | **partial** — conditional pi-relay test (score 0, ERC 0) + 322 tests |
-| UI tool examples / project management | **done** — examples + failure modes on the tool page; projects page rename/delete with confirmation |
+| Net classes + stackup | **done** — `set_net_class`/`set_stackup` persist to the workspace and are mirrored into `*.kicad_pro` (class clearance/width, netclass patterns, board minimum track width and clearance), so KiCad's own DRC uses the same numbers. Per-class width is additionally checked by `check` (KiCad has no per-class width rule). |
+| Manufacturing export + gate | **done** — Gerbers, Excellon drill, pick-and-place, BOM and manifest; `check` reports presence/staleness; `manufacturing` goal criterion. |
+| Generator regression | **done** — the bundled golden flow draws a four-part design with `generate_schematic` from scratch. |
+| Connection retry | **done** — `stream_with_token_retry` retries provider connection errors with backoff. |
+| High-speed | **done** — `route_diff_pair`, `match_length`, via types (through/micro/blind/buried) and `add_via_stitching`. No serpentine generator. |
+| Mechanical outline | **done for wireframes** — polygon outline, `import_outline` for DXF (LWPOLYLINE/LINE) and STEP (EDGE_CURVE lines and sampled arcs), `add_keepout` rule areas. STEP B-spline edges are approximated by their endpoints. |
+| Silkscreen automation | **done** — collision-aware `place_silkscreen`. |
+| Test points | **done** — end-to-end test: one symbol + one footprint per net with the same reference, pad on the net. |
+| Thermal vias | **done** — `add_thermal_vias`; `add_via_stitching`. |
+| BOM lifecycle | **done** — alternates, MSL, ESD class, lead time and lifecycle status in `bom.csv`. |
+| Layout metrics | **done** — owner distance, alignment, wire length, crossings, utilisation; `layout_metric` goal criterion. |
+| Netlist/BOM diff | **done** — `diff_versions`. |
+| Uniform tool contract | **done** — a build-time wrapper gives every tool `{ok, data|error, version}`; images are list attachments after the envelope (documented exception). |
+| Playbook once per run | **done** — injected once per phase. |
+| Knowledge sync + search | **done** — drift test against `.agents/rules` plus `read_reference(query=...)`. |
+| Golden regression suite | **done** — bundled `tests/test_golden_flow.py` runs draw → tidy → route → board → track → manufacturing on a four-part design, plus test-point parity; no live workspace needed. |
+| UI tool examples / project management | **done** — examples and failure modes on the tool page; projects page rename, duplicate and confirm-gated delete. |
+
+### Remaining documented limits
+
+- STEP import reads wireframe edges; splines are chained by endpoints, not evaluated.
+- Impedance uses the IPC-2141 microstrip closed form (15 % tolerance), not a field solver.
+- Netclass *track width* is a harness check because KiCad DRC only enforces a board-wide minimum
+  (which this code lowers to the weakest declared class).
+- No automatic serpentine/length tuning; `match_length` reports and `route_diff_pair` routes.

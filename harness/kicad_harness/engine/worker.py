@@ -774,20 +774,38 @@ def add_track(board, net, points, width=0.25, layer="F.Cu"):
 
 
 @rpc
-def add_via(board, x, y, net, size=0.6, drill=0.3):
-    """Add a through via (outer copper layers) at (x, y)."""
+def add_via(board, x, y, net, size=0.6, drill=0.3, via_type="through", layers=None):
+    """Add a via at (x, y): ``through`` (outer layers), ``blind``/``buried`` or ``micro``.
+
+    Blind and buried vias need ``layers`` naming the two copper layers they join.
+    """
     x, y = _num(x, "x"), _num(y, "y")
     size = _num(size, "size", positive=True)
     drill = _num(drill, "drill", positive=True)
     if drill >= size:
         raise RpcError("InvalidParams", "drill (%g) must be smaller than size (%g)" % (drill, size))
+    kind = str(via_type or "through").lower()
+    if kind not in ("through", "blind", "buried", "micro"):
+        raise RpcError("InvalidParams", "via_type must be through, blind, buried or micro")
 
     def edit(b):
         netinfo = _find_net(b, net)
         copper = list(b.GetEnabledLayers().CuStack())
         v = pcbnew.PCB_VIA(b)
-        v.SetViaType(pcbnew.VIATYPE_THROUGH)
-        v.SetLayerPair(copper[0], copper[-1])
+        if kind == "through":
+            v.SetViaType(pcbnew.VIATYPE_THROUGH)
+            v.SetLayerPair(copper[0], copper[-1])
+        elif kind == "micro":
+            v.SetViaType(pcbnew.VIATYPE_MICROVIA)
+            if layers and len(layers) == 2:
+                v.SetLayerPair(_copper_layer(b, layers[0]), _copper_layer(b, layers[1]))
+            else:
+                v.SetLayerPair(copper[0], copper[1])
+        else:
+            v.SetViaType(pcbnew.VIATYPE_BLIND_BURIED)
+            if not layers or len(layers) != 2:
+                raise RpcError("InvalidParams", "%s via needs layers=[from, to]" % kind)
+            v.SetLayerPair(_copper_layer(b, layers[0]), _copper_layer(b, layers[1]))
         v.SetPosition(_vec(x, y))
         v.SetWidth(_iu(size))
         v.SetDrill(_iu(drill))
@@ -822,6 +840,20 @@ def set_outline(board, width, height, x=0, y=0, corner_radius=0):
             s.SetCornerRadius(_iu(radius))
         b.Add(s)
         return {"bbox": [round(x, 6), round(y, 6), round(width, 6), round(height, 6)]}
+
+    return _edit(board, edit)
+
+
+@rpc
+def set_copper_layers(board, layers):
+    """Set the board's copper layer count (2, 4, 6, ...)."""
+    count = int(_num(layers, "layers", positive=True))
+    if count < 2 or count % 2:
+        raise RpcError("InvalidParams", "layers must be an even number >= 2")
+
+    def edit(b):
+        b.SetCopperLayerCount(count)
+        return {"layers": count}
 
     return _edit(board, edit)
 

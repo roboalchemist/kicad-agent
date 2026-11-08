@@ -36,6 +36,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "find_parts": ("bom", "Search by part number or category; prefer basic parts with stock."),
     "read_part_datasheet": ("bom", "Confirm a pinout or rating; never invent pin numbers."),
     "set_bom_alternates": ("bom", "Record second-source LCSC codes; they appear in the manufacturing BOM."),
+    "set_part_lifecycle": ("bom", "Record MSL, ESD class, lead time and lifecycle for the BOM."),
     # -- schematic ------------------------------------------------------------------------
     "generate_schematic": ("schematic", "Draw a whole design from a parts/nets list instead of placing symbols one by one."),
     "add_symbol": ("schematic", "Place one symbol when extending or fixing a sheet."),
@@ -61,6 +62,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "add_track": ("board", "Hand-route short or critical nets; prefer 45-degree bends."),
     "add_via": ("board", "Change layer where a track must cross."),
     "add_thermal_vias": ("board", "Ring vias around a power pad so heat reaches the plane."),
+    "add_via_stitching": ("board", "Tie ground planes together with vias along the board edge."),
     "route_diff_pair": ("board", "Route a differential pair as two parallel tracks with one spacing."),
     "match_length": ("board", "Measure routed lengths and check a group matches within tolerance."),
     "place_silkscreen": ("board", "Move reference texts to collision-free spots after placement."),

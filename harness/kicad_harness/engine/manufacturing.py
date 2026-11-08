@@ -30,8 +30,18 @@ def _alternates(ws) -> dict[str, list[str]]:
         return {}
 
 
-def _bom_rows(schematic_path: Path, alternates: dict[str, list[str]] | None = None) -> list[dict[str, str]]:
+def _lifecycle(ws) -> dict[str, dict]:
+    path = Path(ws.path) / "bom_lifecycle.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except ValueError:
+        return {}
+
+
+def _bom_rows(schematic_path: Path, alternates: dict[str, list[str]] | None = None,
+              lifecycle: dict[str, dict] | None = None) -> list[dict[str, str]]:
     alternates = alternates or {}
+    lifecycle = lifecycle or {}
     doc = Schematic.load(schematic_path)
     groups: dict[tuple[str, str, str], list[str]] = {}
     for placement in doc.placements():
@@ -43,6 +53,10 @@ def _bom_rows(schematic_path: Path, alternates: dict[str, list[str]] | None = No
     rows = []
     for (value, footprint, lcsc), refs in sorted(groups.items(), key=lambda item: item[0]):
         alts = sorted({alt for ref in refs for alt in alternates.get(ref, [])})
+        entries = [lifecycle.get(ref, {}) for ref in refs]
+        def joined(key: str) -> str:
+            values = sorted({str(e[key]) for e in entries if e.get(key) not in (None, "")})
+            return " ".join(values)
         rows.append({
             "value": value,
             "footprint": footprint,
@@ -50,6 +64,10 @@ def _bom_rows(schematic_path: Path, alternates: dict[str, list[str]] | None = No
             "qty": str(len(refs)),
             "refs": " ".join(sorted(refs)),
             "alternates": " ".join(alts),
+            "msl": joined("msl"),
+            "esd": joined("esd"),
+            "lead_time_days": joined("lead_time_days"),
+            "lifecycle": joined("status"),
         })
     return rows
 
@@ -64,10 +82,11 @@ def export(ws, config=None) -> dict[str, Any]:
     kicad_cli.export_pos(board, out / "positions.csv", config=config)
 
     if ws.schematic_path.is_file():
-        rows = _bom_rows(ws.schematic_path, _alternates(ws))
+        rows = _bom_rows(ws.schematic_path, _alternates(ws), _lifecycle(ws))
         with (out / "bom.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=["value", "footprint", "lcsc", "qty", "refs",
-                                                        "alternates"])
+                                                        "alternates", "msl", "esd", "lead_time_days",
+                                                        "lifecycle"])
             writer.writeheader()
             writer.writerows(rows)
 

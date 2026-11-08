@@ -161,3 +161,77 @@ def test_live_pi_relay_is_clean_when_present() -> None:
     doc = Schematic.load(live / "schematic.kicad_sch")
     assert layout.analyze(doc)["score"] == 0
     assert kicad_cli.erc(live / "schematic.kicad_sch")["counts"]["errors"] == 0
+
+
+def test_step_polygon_reads_the_wireframe() -> None:
+    from kicad_harness.engine import step
+
+    text = "\n".join([
+        "ISO-10303-21;", "DATA;",
+        "#1=CARTESIAN_POINT('',(0.,0.,0.));",
+        "#2=CARTESIAN_POINT('',(10.,0.,0.));",
+        "#3=CARTESIAN_POINT('',(10.,5.,0.));",
+        "#4=CARTESIAN_POINT('',(0.,5.,0.));",
+        "#5=VERTEX_POINT('',#1);", "#6=VERTEX_POINT('',#2);",
+        "#7=VERTEX_POINT('',#3);", "#8=VERTEX_POINT('',#4);",
+        "#9=LINE('',#1,#99);",
+        "#10=EDGE_CURVE('',#5,#6,#9,.T.);", "#11=EDGE_CURVE('',#6,#7,#9,.T.);",
+        "#12=EDGE_CURVE('',#7,#8,#9,.T.);", "#13=EDGE_CURVE('',#8,#5,#9,.T.);",
+        "ENDSEC;", "END-ISO-10303-21;",
+    ])
+    assert step.polygon(text) == [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]]
+    assert step.polygon("DATA; ENDSEC;") == []
+
+
+def test_net_classes_are_written_into_the_kicad_project(tmp_path: Path) -> None:
+    import json
+    from types import SimpleNamespace
+
+    project = tmp_path / "board.kicad_pro"
+    project.write_text(json.dumps({"meta": {"filename": "board.kicad_pro"},
+                                   "net_settings": {"classes": [{"name": "Default",
+                                                                 "clearance": 0.2,
+                                                                 "track_width": 0.2}],
+                                                    "meta": {"version": 5}}}),
+                       encoding="utf-8")
+    rules = design_rules.load(SimpleNamespace(path=tmp_path))
+    rules["netclasses"]["POWER"] = {"nets": ["+5V", "GND"], "width": 0.8, "clearance": 0.3,
+                                    "impedance": None, "explicit": True}
+    design_rules.save(SimpleNamespace(path=tmp_path), rules)
+    saved = json.loads(project.read_text(encoding="utf-8"))
+    classes = {c["name"]: c for c in saved["net_settings"]["classes"]}
+    assert classes["POWER"]["clearance"] == 0.3
+    assert classes["POWER"]["track_width"] == 0.8
+    assert {p["pattern"] for p in saved["net_settings"]["netclass_patterns"]} == {"+5V", "GND"}
+    assert saved["meta"]["filename"] == "board.kicad_pro"  # unrelated data preserved
+    # KiCad's own minimums are lowered to the weakest declared class, so its DRC agrees.
+    assert saved["board"]["design_settings"]["rules"]["min_track_width"] == 0.8
+    assert saved["board"]["design_settings"]["rules"]["min_clearance"] == 0.3
+
+
+def test_manufacturing_bom_carries_alternates_and_lifecycle(tmp_path: Path, engine_config) -> None:
+    import csv
+    import json
+    import shutil
+    from types import SimpleNamespace
+
+    from kicad_harness.engine import schematic as sch
+
+    board = tmp_path / "board.kicad_pcb"
+    shutil.copy(FIXTURE, board)
+    doc = sch.Schematic.create(tmp_path / "schematic.kicad_sch",
+                               libraries={"Device": sch.read_library("/usr/share/kicad/symbols/Device.kicad_sym")})
+    doc.add_symbol("Device:R", "R1", 50.0, 50.0, value="10k")
+    doc.save()
+    (tmp_path / "bom_alternates.json").write_text(json.dumps({"R1": ["C111111"]}), encoding="utf-8")
+    (tmp_path / "bom_lifecycle.json").write_text(
+        json.dumps({"R1": {"msl": 1, "esd": "HBM-2kV", "lead_time_days": 14, "status": "active"}}),
+        encoding="utf-8")
+    ws = SimpleNamespace(path=tmp_path, board_path=board,
+                         schematic_path=tmp_path / "schematic.kicad_sch")
+    manufacturing.export(ws, engine_config)
+    rows = list(csv.DictReader((tmp_path / "manufacturing" / "bom.csv").open(encoding="utf-8")))
+    row = next(r for r in rows if r["refs"] == "R1")
+    assert row["alternates"] == "C111111"
+    assert row["msl"] == "1" and row["esd"] == "HBM-2kV"
+    assert row["lead_time_days"] == "14" and row["lifecycle"] == "active"

@@ -49,6 +49,18 @@ export function ProjectsPage({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const duplicate = async (current: string) => {
+    const next = window.prompt("Name for the copy", `${current}-copy`)?.trim();
+    if (!next) return;
+    try {
+      await api.duplicateDesign(current, next);
+      await load();
+      await refreshDesigns();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const remove = async (current: string) => {
     if (!window.confirm(`Delete project "${current}" and its history?`)) return;
     try {
@@ -170,6 +182,9 @@ export function ProjectsPage({ onClose }: { onClose: () => void }) {
               <div className="project-actions">
                 <button className="link" data-testid={`project-rename-${d.name}`} onClick={() => void rename(d.name)}>
                   rename
+                </button>
+                <button className="link" data-testid={`project-duplicate-${d.name}`} onClick={() => void duplicate(d.name)}>
+                  duplicate
                 </button>
                 <button className="link danger" data-testid={`project-delete-${d.name}`} onClick={() => void remove(d.name)}>
                   delete

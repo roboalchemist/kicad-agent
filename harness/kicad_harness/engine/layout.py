@@ -30,7 +30,7 @@ import re
 from collections import deque
 from typing import Any, Iterable
 
-from .schematic import PAPER, POWER_NETS, Schematic, find_all, find_one, num
+from .schematic import PAPER, POWER_NETS, NetNode, Schematic, _clean, find_all, find_one, num
 
 MARGIN = 10.0          # sheet border left free around the grid
 GAP = 4.0              # clear space between neighbouring symbol boxes
@@ -364,16 +364,7 @@ def tidy(doc: Schematic, *, paper: str | None = None) -> dict[str, Any]:
     pin_net = _alias_nets(doc)
     # Power symbols (GND/+5V/PWR_FLAG) name nets through their value, but a PWR_FLAG's value is
     # "PWR_FLAG" — its real net is the one it was wired to. Record that before the wires go.
-    power: dict[tuple[str, str], str] = {}
-    for placement in doc.placements():
-        if not placement.reference.startswith("#"):
-            continue
-        symbol = doc.lookup(placement.lib_id)
-        if symbol is None:
-            continue
-        for number in symbol.pins:
-            net = doc.pin_net(placement, number)
-            power[(placement.reference, number)] = net or placement.value
+    power = _power_nets(doc, pin_net)
 
     all_names = list(pin_net.values()) + list(power.values())
     label_w = max((_label_width(name) for name in all_names), default=MIN_LABEL_W)
@@ -392,6 +383,78 @@ def tidy(doc: Schematic, *, paper: str | None = None) -> dict[str, Any]:
 
     assert chosen_report is not None
     return chosen_report
+
+
+def _power_nets(doc: Schematic, pin_net: dict[tuple[str, str], str]) -> dict[tuple[str, str], str]:
+    """Net of every power-symbol pin, read *before* the wires are cleared.
+
+    A power symbol names its net through its value, but a PWR_FLAG's value is "PWR_FLAG" — its real
+    net is the one it is wired to. Falling back to the value turned every flag into a net of its
+    own, leaving GND with no driver and ERC with "power pin not driven".
+    """
+    placements = [p for p in doc.placements() if p.reference.startswith("#")]
+    at: dict[tuple[float, float], list] = {}
+    for placement in placements:
+        symbol = doc.lookup(placement.lib_id)
+        for number in (symbol.pins if symbol else {}):
+            for point in doc.pin_points(placement, number):
+                at.setdefault(NetNode(*point).key(), []).append((placement, number))
+
+    adjacency: dict[tuple[float, float], set[tuple[float, float]]] = {}
+    for wire in doc.wires:
+        pts = find_one(wire, "pts")
+        if not pts:
+            continue
+        ends = [NetNode(float(p[1]), float(p[2])).key() for p in find_all(pts, "xy") if len(p) > 2]
+        for a, b in zip(ends, ends[1:]):
+            adjacency.setdefault(a, set()).add(b)
+            adjacency.setdefault(b, set()).add(a)
+    labels: dict[tuple[float, float], str] = {}
+    for label in find_all(doc.tree, "label") + find_all(doc.tree, "global_label"):
+        point = find_one(label, "at")
+        if point and len(point) > 2:
+            labels[NetNode(float(point[1]), float(point[2])).key()] = _clean(label[1])
+
+    out: dict[tuple[str, str], str] = {}
+    for placement in placements:
+        symbol = doc.lookup(placement.lib_id)
+        if symbol is None:
+            continue
+        for number in symbol.pins:
+            net = doc.pin_net(placement, number)
+            if net:
+                out[(placement.reference, number)] = net
+                continue
+            value = placement.value or ""
+            if value and value != "PWR_FLAG":
+                out[(placement.reference, number)] = value
+                continue
+            # A flag: follow the wire to a label or to a power symbol that does name a net.
+            found = None
+            seen: set[tuple[float, float]] = set()
+            queue = [NetNode(*p).key() for p in doc.pin_points(placement, number)]
+            while queue and not found:
+                point = queue.pop()
+                if point in seen:
+                    continue
+                seen.add(point)
+                if point in labels:
+                    found = labels[point]
+                    break
+                for other, other_number in at.get(point, []):
+                    if other.reference == placement.reference:
+                        continue
+                    other_value = other.value or ""
+                    if other_value and other_value != "PWR_FLAG":
+                        found = other_value
+                        break
+                    other_net = pin_net.get((other.reference, str(other_number)))
+                    if other_net:
+                        found = other_net
+                        break
+                queue.extend(p for p in adjacency.get(point, ()) if p not in seen)
+            out[(placement.reference, number)] = found or value
+    return out
 
 
 def _pin_sides(doc: Schematic, placement, symbol) -> dict[str, bool]:

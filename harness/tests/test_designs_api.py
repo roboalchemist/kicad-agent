@@ -41,3 +41,18 @@ async def test_rename_refuses_an_existing_name(services) -> None:
         assert response.status_code == 409
     for name in ("first", "second"):
         assert Workspace.exists(services.config, name)
+
+
+async def test_duplicate_copies_the_project_and_keeps_the_original(services) -> None:
+    name = "duplicate-me"
+    ws = Workspace.create_schematic(services.config, name, "a divider")
+    (ws.path / "note.txt").write_text("kept", encoding="utf-8")
+    async with _client(services) as client:
+        response = await client.post(f"/api/designs/{name}/duplicate", json={"name": "copy"})
+        assert response.status_code == 200, response.text
+        assert Workspace.exists(services.config, name)
+        copied = Workspace(services.config, "copy")
+        assert (copied.path / "note.txt").read_text(encoding="utf-8") == "kept"
+        assert (copied.path / "schematic.kicad_sch").is_file()
+        collision = await client.post(f"/api/designs/{name}/duplicate", json={"name": "copy"})
+        assert collision.status_code == 409

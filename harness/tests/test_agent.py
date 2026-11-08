@@ -639,3 +639,82 @@ async def test_version_summary_resolves_the_selected_model(services, design, mon
     assert seen["requested"] == "bifrost:private/qwen3.8-27b"
     assert seen["model"] is sentinel
     assert body["summary"] == "moved a part" and body["error"] is None
+
+
+async def test_tool_results_share_one_envelope(services, design):
+    """Every tool answers {ok, data, version}; images ride along as attachments."""
+    name, ws = design
+    script = Script([
+        [("get_design", {})],
+        [("check", {})],
+        [("render", {"mode": "2d", "side": "front"})],
+        [("move_footprint", {"ref": "NOPE9", "x": 1, "y": 1})],
+        "done",
+    ])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("inspect", deps=deps_for(services, name))
+    assert result.output == "done"
+    returns = [p for m in result.all_messages() for p in getattr(m, "parts", [])
+               if isinstance(p, ToolReturnPart)]
+    assert returns
+    for part in returns:
+        payload = part.content
+        if isinstance(payload, list):
+            payload = payload[0]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+        assert isinstance(payload, dict), (part.tool_name, type(payload))
+        assert {"ok", "data", "version"} <= set(payload), (part.tool_name, payload)
+        if part.tool_name == "render":
+            from pydantic_ai.messages import BinaryContent
+
+            images = [i for i in part.content if isinstance(i, BinaryContent)]
+            assert images and all(image.media_type == "image/png" for image in images)
+    failure = next(p for p in returns if p.tool_name == "move_footprint")
+    assert failure.content["ok"] is False and failure.content["data"] is None
+    assert "NOPE9" in failure.content["error"]
+
+
+async def test_net_class_tool_persists_rules_and_the_kicad_project(services, design):
+    """The declared rules must survive a reload and reach the project KiCad reads."""
+    name, ws = design
+    start = len(ws.log())
+    script = Script([
+        [("set_net_class", {"name": "POWER", "nets": ["+5V", "GND"], "width": 0.8,
+                            "clearance": 0.3})],
+        [("set_stackup", {"layers": 2, "material": "FR4", "er": 4.4,
+                          "dielectric_height": 0.2})],
+        "done",
+    ])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        await agent.run("declare rules", deps=deps_for(services, name))
+    assert len(ws.log()) >= start + 1, "the declaration should be a version"
+
+    rules = json.loads((ws.path / "design_rules.json").read_text(encoding="utf-8"))
+    assert rules["netclasses"]["POWER"]["explicit"] is True
+    assert rules["stackup"]["layers"] == 2
+
+    project_path = next(iter(ws.path.glob("*.kicad_pro")))
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    classes = {c["name"]: c for c in project["net_settings"]["classes"]}
+    assert classes["POWER"]["track_width"] == 0.8
+    assert classes["POWER"]["clearance"] == 0.3
+    assert {p["pattern"] for p in project["net_settings"]["netclass_patterns"]} == {"+5V", "GND"}
+
+
+async def test_via_stitching_places_vias_on_the_net(services, design):
+    name, ws = design
+    board_hash, _ = services.artifacts.materialize(ws.board_path.read_bytes())
+    index = services.artifacts.index(board_hash)
+    net = next(p["net"] for p in index["pads"] if p.get("net"))
+    script = Script([[("add_via_stitching", {"net": net, "spacing": 10.0, "inset": 1.0})], "done"])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("stitch the ground", deps=deps_for(services, name))
+    assert result.output == "done"
+    board_hash, _ = services.artifacts.materialize(ws.board_path.read_bytes())
+    index = services.artifacts.index(board_hash)
+    vias = index.get("vias") or []
+    assert any((v.get("net") or "") == net for v in vias), vias[:3]

@@ -596,3 +596,17 @@ These texts are not just documentation; they are applied to every run:
 | FastAPI | 8100 | `harness/.venv/bin/kicad-harness serve` |
 | Node runtime | 8101 | `npm --prefix harness/web run server` |
 | Vite | 5173 | `npm --prefix harness/web run dev` |
+## Rules, manufacturing, mechanics and the tool contract
+
+- `engine/design_rules.py` stores net classes and the stackup in `design_rules.json` and mirrors
+  them into the KiCad project (`*.kicad_pro`): class width/clearance, netclass patterns, and board
+  minimum track width/clearance. `add_track` defaults to the class width; `check` reports width,
+  stackup and impedance mismatches.
+- `engine/manufacturing.py` writes `manufacturing/`: production Gerbers, drill, pick-and-place,
+  BOM (alternates, MSL, ESD, lead time, lifecycle) and a manifest with the board hash.
+- `engine/dxf.py` and `engine/step.py` read mechanical outlines; `set_board_outline(points=...)`,
+  `import_outline` and `add_keepout` apply them.
+- Every tool result is wrapped at build time as `{ok, data|error, version}`; image results are a
+  list whose first element is that envelope and whose remaining elements are attachments.
+- Goal criteria include `manufacturing` and `layout_metric`, evaluated from the same facts the
+  server and CLI compute.

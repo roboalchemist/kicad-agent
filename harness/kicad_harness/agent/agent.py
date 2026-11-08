@@ -699,6 +699,50 @@ blocks you.
 Keep messages to the user short: what you changed and why.
 """
 
+def _envelope(payload: Any, *, ok: bool = True) -> dict[str, Any]:
+    """Every tool result shares one shape: ``{ok, data|error, version}``.
+
+    Legacy flattened keys are kept alongside ``data`` so existing prompts/tests keep working;
+    image results are a list whose first item is this envelope and whose remaining items are
+    attachments (``BinaryContent``).
+    """
+    if not isinstance(payload, dict):
+        return {"ok": ok, "data": payload, "version": None}
+    if ok and "ok" not in payload:
+        payload = {**payload, "ok": True}
+    if payload.get("ok") is False:
+        return {"ok": False, "error": payload.get("error") or "tool failed",
+                "data": None, "version": payload.get("version"), **payload}
+    core = {key: value for key, value in payload.items()
+            if key not in ("ok", "data", "error", "version")}
+    return {**payload, "ok": True, "data": payload.get("data", core),
+            "version": payload.get("version")}
+
+
+def _envelope_result(value: Any) -> Any:
+    """Wrap a tool's return value (ToolReturn, list with attachments, dict, or plain data)."""
+    from pydantic_ai import ToolReturn
+
+    if isinstance(value, ToolReturn):
+        rv = value.return_value
+        if isinstance(rv, list) and rv:
+            head = rv[0]
+            if isinstance(head, dict):
+                head = _envelope(head)
+            elif isinstance(head, str):
+                try:
+                    parsed = json.loads(head)
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    head = json.dumps(_envelope(parsed))
+            return ToolReturn(return_value=[head, *rv[1:]], metadata=value.metadata)
+        return ToolReturn(return_value=_envelope(rv), metadata=value.metadata)
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        return [_envelope(value[0]), *value[1:]]
+    return _envelope(value)
+
+
 _tool_description_cache: dict[str, str] | None = None
 
 def tool_descriptions() -> dict[str, str]:
@@ -1268,13 +1312,50 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool(sequential=True)
     async def add_via(
-        ctx: RunContext[HarnessDeps], x: float, y: float, net: str, size: float = 0.6, drill: float = 0.3
+        ctx: RunContext[HarnessDeps], x: float, y: float, net: str, size: float = 0.6,
+        drill: float = 0.3, via_type: str = "through", layers: list[str] | None = None,
     ) -> ToolReturn:
-        """Add a through via at (x, y) on `net`."""
+        """Add a via at (x, y) on `net`: through (default), micro, blind or buried.
+
+        Blind/buried vias need `layers` naming the two copper layers they join."""
         return await _edit(
-            ctx, "add_via", f"Add {net} via at ({x:g}, {y:g})",
-            lambda b: engine(ctx).call("add_via", board=b, x=x, y=y, net=net, size=size, drill=drill),
+            ctx, "add_via", f"Add {net} {via_type} via at ({x:g}, {y:g})",
+            lambda b: engine(ctx).call("add_via", board=b, x=x, y=y, net=net, size=size,
+                                       drill=drill, via_type=via_type, layers=layers),
         )
+
+    @agent.tool(sequential=True)
+    async def add_via_stitching(
+        ctx: RunContext[HarnessDeps], net: str = "GND", spacing: float = 5.0,
+        inset: float = 1.0, size: float = 0.6, drill: float = 0.3,
+    ) -> ToolReturn:
+        """Ring stitching vias around the board edge on `net`, every `spacing` mm, `inset` from
+        the edge. Use to tie the ground planes together (pcb-emc#Via Stitching)."""
+        board_hash, index = await _working(ctx)
+        ex, ey, ew, eh = index["board"]["edge_bbox"]
+        step = max(1.0, float(spacing))
+        inset = max(0.2, float(inset))
+        points: list[tuple[float, float]] = []
+        x, y = ex + inset, ey + inset
+        while x <= ex + ew - inset + 1e-6:
+            points.append((x, ey + inset))
+            points.append((x, ey + eh - inset))
+            x += step
+        y = ey + inset + step
+        while y <= ey + eh - inset - 1e-6:
+            points.append((ex + inset, y))
+            points.append((ex + ew - inset, y))
+            y += step
+        # Corners are covered by the first pass; avoid duplicate coordinates.
+        points = list(dict.fromkeys((round(px, 3), round(py, 3)) for px, py in points))
+
+        def work(board) -> dict:
+            eng = engine(ctx)
+            for px, py in points:
+                eng.call("add_via", board=board, x=px, y=py, net=net, size=size, drill=drill)
+            return {"vias": len(points), "net": net, "spacing": step, "inset": inset}
+
+        return await _edit(ctx, "add_via_stitching", f"Stitch {net} with {len(points)} vias", work)
 
     @agent.tool(sequential=True)
     async def autoroute(ctx: RunContext[HarnessDeps], timeout_s: int = 120) -> ToolReturn:
@@ -1452,24 +1533,31 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool(sequential=True)
     async def import_outline(ctx: RunContext[HarnessDeps], path: str) -> ToolReturn:
-        """Set the board outline from an ASCII DXF LWPOLYLINE (mechanical drawing). Relative
-        paths are resolved inside the design workspace."""
-        from kicad_harness.engine import dxf
+        """Set the board outline from an ASCII DXF (LWPOLYLINE or LINE loop) or a STEP file
+        (EDGE_CURVE wireframe, arcs sampled). Relative paths resolve inside the design workspace."""
+        from kicad_harness.engine import dxf, step
 
         ws = _ws(ctx)
         source = Path(path) if Path(path).is_absolute() else ws.path / path
         if not source.is_file():
-            return ToolReturn(return_value={"ok": False, "error": f"no DXF at {source}"})
+            return ToolReturn(return_value={"ok": False, "error": f"no mechanical file at {source}"})
+        suffix = source.suffix.lower()
         try:
             text = source.read_text(encoding="utf-8", errors="ignore")
-            points = dxf.polygon(text)
-            factor = dxf.units_mm(text)
-            points = [[x * factor, y * factor] for x, y in points]
+            if suffix in (".step", ".stp"):
+                points = step.polygon(text)  # STEP is always millimetres
+            elif suffix in (".dxf",):
+                points = dxf.polygon(text)
+                factor = dxf.units_mm(text)
+                points = [[x * factor, y * factor] for x, y in points]
+            else:
+                return ToolReturn(return_value={"ok": False,
+                                                "error": f"unsupported outline format {suffix!r}: use .dxf, .step or .stp"})
         except Exception as exc:
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         if len(points) < 3:
             return ToolReturn(return_value={"ok": False,
-                                            "error": "no LWPOLYLINE (or LINE loop) with 3+ points found"})
+                                            "error": "no closed outline with 3+ points found in the file"})
         return await _edit(
             ctx, "import_outline", f"Import outline from {source.name}",
             lambda b: engine(ctx).call("set_outline_polygon", board=b, points=points),
@@ -1537,8 +1625,12 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         rules["netclasses"][name] = {"nets": nets, "width": width, "clearance": clearance,
                                      "impedance": impedance, "explicit": True}
         await asyncio.to_thread(design_rules.save, ws, rules)
+        version = await asyncio.to_thread(
+            lambda: ws.commit(f"Declare net class {name}", author="agent",
+                              trailers=_trailers(ctx, "set_net_class")))
         return ToolReturn(return_value={"ok": True, "class": name, "nets": nets, "width": width,
-                                        "clearance": clearance, "impedance": impedance})
+                                        "clearance": clearance, "impedance": impedance,
+                                        "version": version})
 
     @agent.tool
     async def set_stackup(
@@ -1557,7 +1649,18 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                             "impedance": impedance or {}, "er": er,
                             "dielectric_height": dielectric_height}
         await asyncio.to_thread(design_rules.save, ws, rules)
-        return ToolReturn(return_value={"ok": True, **rules["stackup"]})
+        applied = False
+        if ws.board_path.is_file():
+            try:
+                ctx.deps.services.engine.call("set_copper_layers", board=str(ws.board_path),
+                                              layers=layers)
+                with ws.lock:
+                    ws.commit(f"Set {layers}-layer stackup", author="agent",
+                              trailers=_trailers(ctx, "set_stackup"))
+                applied = True
+            except Exception:
+                applied = False
+        return ToolReturn(return_value={"ok": True, **rules["stackup"], "board_layers_set": applied})
 
     @agent.tool(sequential=True)
     async def export_manufacturing(ctx: RunContext[HarnessDeps]) -> ToolReturn:
@@ -2182,6 +2285,33 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return ToolReturn(return_value={"ok": True, "ref": ref, "alternates": data[ref]})
 
     @agent.tool
+    async def set_part_lifecycle(ctx: RunContext[HarnessDeps], ref: str, msl: int | None = None,
+                                 esd: str | None = None, lead_time_days: int | None = None,
+                                 status: str = "active") -> ToolReturn:
+        """Record manufacturing lifecycle data for a part (moisture level, ESD class, lead time,
+        active/EOL); the manufacturing BOM carries the columns."""
+        import json
+
+        ws = _ws(ctx)
+        path = ws.path / "bom_lifecycle.json"
+        data = {}
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                data = {}
+        entry = {"status": status}
+        if msl is not None:
+            entry["msl"] = msl
+        if esd:
+            entry["esd"] = esd
+        if lead_time_days is not None:
+            entry["lead_time_days"] = lead_time_days
+        data[ref] = entry
+        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return ToolReturn(return_value={"ok": True, "ref": ref, **entry})
+
+    @agent.tool
     async def read_part_datasheet(
         ctx: RunContext[HarnessDeps], mpn: str, manufacturer: str | None = None, pages: str | None = "1-6"
     ) -> ToolReturn:
@@ -2284,6 +2414,29 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             + goals.failing_summary(evaluation)
             + ". Keep working (inspect, edit, check) and only finish when check reports every criterion passing."
         )
+
+    # One envelope for every tool result: {ok, data|error, version}; images stay attachments.
+    import functools as _functools
+    import inspect as _inspect
+
+    for _tool in agent._function_toolset.tools.values():
+        _schema = _tool.function_schema
+        if _schema is None or getattr(_schema, "_enveloped", False):
+            continue
+        _original = _schema.function
+        if _inspect.iscoroutinefunction(_original):
+            @_functools.wraps(_original)
+            async def _wrapped(*args, __original=_original, **kwargs):
+                return _envelope_result(await __original(*args, **kwargs))
+        else:
+            @_functools.wraps(_original)
+            def _wrapped(*args, __original=_original, **kwargs):
+                return _envelope_result(__original(*args, **kwargs))
+        try:
+            _schema.function = _wrapped
+            _schema._enveloped = True
+        except Exception:
+            pass
 
     # The Settings catalogue's one-line "when to use it" is part of the tool contract, not just
     # documentation: append it to the description the model receives. Must run after all tools

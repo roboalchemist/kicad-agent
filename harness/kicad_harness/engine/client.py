@@ -250,9 +250,11 @@ class Engine:
         return self.call("add_track", board, net=net, points=[list(p) for p in points], width=width, layer=layer)
 
     def add_via(self, board: str | os.PathLike[str], x: float, y: float, net: str,
-                size: float = 0.6, drill: float = 0.3) -> dict:
-        """Add a through via. ``{"uuid"}``."""
-        return self.call("add_via", board, x=x, y=y, net=net, size=size, drill=drill)
+                size: float = 0.6, drill: float = 0.3, via_type: str = "through",
+                layers: Sequence[str] | None = None) -> dict:
+        """Add a via (through/blind/buried/micro). ``{"uuid"}``."""
+        return self.call("add_via", board, x=x, y=y, net=net, size=size, drill=drill,
+                         via_type=via_type, layers=list(layers) if layers else None)
 
     def set_outline(self, board: str | os.PathLike[str], width: float, height: float, x: float = 0,
                     y: float = 0, corner_radius: float = 0) -> dict:
@@ -266,6 +268,9 @@ class Engine:
         return self.call("add_keepout", board, polygon=[list(p) for p in polygon],
                          layers=list(layers) if layers else None, no_tracks=no_tracks,
                          no_vias=no_vias, no_pours=no_pours, no_pads=no_pads)
+
+    def set_copper_layers(self, board: str | os.PathLike[str], layers: int) -> dict:
+        return self.call("set_copper_layers", board, layers=int(layers))
 
     def set_outline_polygon(self, board: str | os.PathLike[str],
                             points: Sequence[Sequence[float]]) -> dict:

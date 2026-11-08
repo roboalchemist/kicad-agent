@@ -50,8 +50,90 @@ def load(ws) -> dict[str, Any]:
     return data
 
 
+PROJECT_TEMPLATE: dict[str, Any] = {
+    "board": {},
+    "boards": [],
+    "meta": {"filename": "board.kicad_pro", "version": 1},
+    "net_settings": {"classes": [], "meta": {"version": 5}, "net_colors": {},
+                     "netclass_assignments": {}, "netclass_patterns": []},
+    "schematic": {},
+}
+
+
+def _project_path(ws) -> Path:
+    candidates = sorted(Path(ws.path).glob("*.kicad_pro"))
+    return candidates[0] if candidates else Path(ws.path) / "board.kicad_pro"
+
+
+def _write_project(ws, rules: dict[str, Any]) -> Path:
+    """Mirror the net classes into the KiCad project so KiCad's DRC uses the same clearance.
+
+    Netclass clearance *is* enforced by KiCad DRC (track width is only a default; the harness
+    check covers that). Existing project data is preserved; only net_settings changes.
+    """
+    path = _project_path(ws)
+    try:
+        project = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        project = json.loads(json.dumps(PROJECT_TEMPLATE))
+    net = project.setdefault("net_settings", {})
+    existing = {c.get("name"): c for c in net.get("classes", []) if isinstance(c, dict)}
+    default = existing.get("Default") or {
+        "name": "Default", "clearance": 0.2, "track_width": 0.2, "via_diameter": 0.6,
+        "via_drill": 0.3, "microvia_diameter": 0.3, "microvia_drill": 0.1,
+        "diff_pair_width": 0.2, "diff_pair_gap": 0.25, "diff_pair_via_gap": 0.25,
+        "bus_width": 12, "line_style": 0, "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)", "wire_width": 6,
+        "priority": 2147483647, "tuning_profile": "",
+    }
+    classes = [default]
+    patterns: list[dict[str, str]] = []
+    priority = 1
+    for name, spec in (rules.get("netclasses") or {}).items():
+        if name == "Default" or not spec.get("explicit"):
+            continue
+        entry = dict(default)
+        entry.update({
+            "name": name,
+            "clearance": float(spec.get("clearance") or 0.2),
+            "track_width": float(spec.get("width") or 0.2),
+            "diff_pair_width": float(spec.get("width") or 0.2),
+            "diff_pair_gap": float(spec.get("clearance") or 0.2),
+            "priority": priority,
+        })
+        priority += 1
+        classes.append(entry)
+        for pattern in spec.get("nets") or []:
+            patterns.append({"netclass": name, "pattern": pattern})
+    net["classes"] = classes
+    net["netclass_patterns"] = patterns
+    # KiCad has no per-class track-width DRC, so also lower the board's minimums to the weakest
+    # declared class: a track thinner than every declared class is then a KiCad error too.
+    widths = [float(spec.get("width")) for name, spec in (rules.get("netclasses") or {}).items()
+              if name != "Default" and spec.get("explicit") and spec.get("width")]
+    clearances = [float(spec.get("clearance")) for name, spec in (rules.get("netclasses") or {}).items()
+                  if name != "Default" and spec.get("explicit") and spec.get("clearance")]
+    design = project.setdefault("board", {}).setdefault("design_settings", {})
+    board_rules = design.setdefault("rules", {})
+    if widths:
+        board_rules["min_track_width"] = max(float(board_rules.get("min_track_width") or 0),
+                                             min(widths))
+    if clearances:
+        board_rules["min_clearance"] = max(float(board_rules.get("min_clearance") or 0),
+                                           min(clearances))
+    net.setdefault("meta", {"version": 5})
+    net.setdefault("net_colors", {})
+    net.setdefault("netclass_assignments", {})
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(project, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
 def save(ws, rules: dict[str, Any]) -> dict[str, Any]:
-    """Atomic, unique-temp write: two tools may save at once (they did, and raced)."""
+    """Atomic, unique-temp write: two tools may save at once (they did, and raced).
+
+    The same net classes are mirrored into the KiCad project (``*.kicad_pro``)."""
     path = _path(ws)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".design_rules.", suffix=".tmp")
@@ -62,6 +144,10 @@ def save(ws, rules: dict[str, Any]) -> dict[str, Any]:
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
+    try:
+        _write_project(ws, rules)
+    except Exception:
+        pass  # rules still apply in the harness even if the project cannot be written
     return rules
 
 
