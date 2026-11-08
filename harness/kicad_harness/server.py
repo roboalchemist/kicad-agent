@@ -1395,9 +1395,19 @@ def create_app() -> FastAPI:
                     lambda: layout_mod.analyze(Schematic.load(ws.schematic_path)))
             except Exception:
                 layout_report = None
+            from kicad_harness.engine import layout as layout_metrics_mod
+            from kicad_harness.engine.schematic import Schematic as _Schematic
+
+            try:
+                metrics = await asyncio.to_thread(
+                    lambda: layout_metrics_mod.metrics(_Schematic.load(ws.schematic_path)))
+            except Exception:
+                metrics = None
             parts = await asyncio.to_thread(design_parts, svc, ws)
             return goals.evaluate(
                 ws.goal(), {}, {"erc_counts": erc_counts,
+                                "schematic_metrics": metrics,
+                                "manufacturing": None,
                                 "board_laid_out": ws.board_path.is_file(),
                                 "schematic_missing": parts["missing_from_schematic"],
                                 "board_missing": parts["missing_from_board"],
@@ -1428,10 +1438,27 @@ def create_app() -> FastAPI:
                     lambda: layout_mod.analyze(Schematic.load(ws.schematic_path)))
             except Exception:
                 layout_report = None
+        from kicad_harness.engine import manufacturing as manufacturing_mod
+
+        try:
+            mfg = await asyncio.to_thread(manufacturing_mod.status, ws)
+        except Exception:
+            mfg = None
+        metrics = None
+        if ws.schematic_path.is_file():
+            from kicad_harness.engine import layout as layout_metrics_mod
+            from kicad_harness.engine.schematic import Schematic as _Schematic
+
+            try:
+                metrics = await asyncio.to_thread(
+                    lambda: layout_metrics_mod.metrics(_Schematic.load(ws.schematic_path)))
+            except Exception:
+                metrics = None
         drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
                "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
                "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"],
-               "schematic_layout": layout_report}
+               "schematic_layout": layout_report, "schematic_metrics": metrics,
+               "manufacturing": mfg}
         return goals.evaluate(ws.goal(), index, drc, svc.store.review.list(design))
 
     # ------------------------------------------------------------------ steering (messages mid-run)

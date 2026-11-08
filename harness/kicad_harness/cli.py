@@ -315,11 +315,17 @@ def _eval_inputs(svc, ws, name):
             layout_report = layout_mod.analyze(doc) if doc is not None else None
         except Exception:
             layout_report = None
+        try:
+            metrics = layout_mod.metrics(doc) if doc is not None else None
+        except Exception:
+            metrics = None
         return {}, {
             "erc_counts": counts,
             "unconnected_pins": floating,
             "board_laid_out": False,
             "schematic_layout": layout_report,
+            "schematic_metrics": metrics,
+            "manufacturing": None,
         }, threads
 
     board_hash, _ = svc.artifacts.materialize(ws.board_path.read_bytes())
@@ -342,10 +348,26 @@ def _eval_inputs(svc, ws, name):
             layout_report = layout_mod.analyze(Schematic.load(ws.schematic_path))
         except Exception:
             layout_report = None
+    from kicad_harness.engine import manufacturing as manufacturing_mod
+
+    try:
+        mfg = manufacturing_mod.status(ws)
+    except Exception:
+        mfg = None
+    metrics = None
+    if ws.schematic_path.is_file():
+        from kicad_harness.engine import layout as layout_metrics_mod
+        from kicad_harness.engine.schematic import Schematic as _Schematic
+
+        try:
+            metrics = layout_metrics_mod.metrics(_Schematic.load(ws.schematic_path))
+        except Exception:
+            metrics = None
     drc = {**drc, "schematic_missing": parts["missing_from_schematic"],
            "board_missing": parts["missing_from_board"], "sync_gaps": parts["sync_gaps"],
            "requirements": parts["requirements"], "requirement_gaps": parts["requirement_gaps"],
-           "schematic_layout": layout_report}
+           "schematic_layout": layout_report, "schematic_metrics": metrics,
+           "manufacturing": mfg}
     return svc.artifacts.index(board_hash), drc, threads
 
 

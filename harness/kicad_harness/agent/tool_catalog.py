@@ -48,7 +48,10 @@ TOOLS: dict[str, tuple[str, str]] = {
     # -- board ----------------------------------------------------------------------------
     "set_board_outline": ("board", "Set the mechanical outline first; everything else depends on it."),
     "set_net_class": ("board", "Declare width/clearance/impedance per net group; new tracks use it and check flags narrower ones."),
-    "set_stackup": ("board", "Declare copper layers, material and thickness; check compares it with the board."),
+    "set_stackup": ("board", "Declare copper layers, material, er/height and impedance; check compares it with the board."),
+    "add_keepout": ("board", "Rule-area keepout: no tracks/vias/pours inside the polygon."),
+    "import_outline": ("board", "Set Edge.Cuts from an ASCII DXF LWPOLYLINE."),
+    "place_test_points": ("board", "Add one test point per net as symbol + footprint, keeping parity valid."),
     "export_manufacturing": ("board", "Write Gerbers, drill, pick-and-place and BOM plus a manifest for ordering."),
     "move_footprint": ("board", "Place by function, then route; coordinates are absolute mm."),
     "rotate_footprint": ("board", "Rotate about the anchor to face pins toward their partners."),
@@ -285,6 +288,36 @@ def tool_guidance(name: str) -> str:
     return TOOLS.get(name, ("global", ""))[1]
 
 
+EXAMPLES: dict[str, str] = {
+    "get_design": "get_design()",
+    "check": "check(detail=True)",
+    "render": "render(kind='schematic')",
+    "find_parts": "find_parts(query='NE555', basic_only=True)",
+    "read_part_datasheet": "read_part_datasheet(mpn='NE555DR', lcsc='C111899')",
+    "generate_schematic": "generate_schematic(parts=[...], nets=[...])",
+    "label_net": "label_net(target='U1.3', net='GND')",
+    "connect_pins": "connect_pins(a='R1.2', b='C1.1', net='FILTER')",
+    "tidy_schematic": "tidy_schematic()",
+    "route_schematic": "route_schematic(max_mm=300)",
+    "set_net_class": "set_net_class(name='POWER', nets=['+5V','GND'], width=0.8)",
+    "set_stackup": "set_stackup(layers=4, material='FR4', er=4.4, dielectric_height=0.2)",
+    "add_keepout": "add_keepout(points=[[10,10],[20,10],[20,20],[10,20]])",
+    "place_test_points": "place_test_points(nets=['+5V','GND'])",
+    "export_manufacturing": "export_manufacturing()",
+    "place_silkscreen": "place_silkscreen()",
+    "diff_versions": "diff_versions(a='HEAD^', b='working', scope='nets')",
+    "read_reference": "read_reference(query='impedance')",
+}
+
+FAILURE_MODES: dict[str, list[str]] = {
+    "route_schematic": ["nets with 3+ pins stay labelled", "skips a wire that would change connectivity"],
+    "place_test_points": ["needs a board and a schematic (keeps parity valid)"],
+    "export_manufacturing": ["needs a board; check reports missing/stale packages"],
+    "set_net_class": ["only explicit classes are enforced; the implicit Default is not"],
+    "find_parts": ["returns category counts with categories=True, not parts"],
+}
+
+
 def describe_tools(descriptions: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Every known tool with its stage, description and guidance.
 
@@ -306,6 +339,8 @@ def describe_tools(descriptions: dict[str, str] | None = None) -> list[dict[str,
             "summary": summary,
             "guidance": guidance,
             "description": text,
+            "example": EXAMPLES.get(name, ""),
+            "failure_modes": FAILURE_MODES.get(name, []),
         })
     return out
 

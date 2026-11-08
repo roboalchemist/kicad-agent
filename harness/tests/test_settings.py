@@ -145,7 +145,7 @@ def test_tool_surface_uses_one_verb_object_name_per_action() -> None:
         "add", "autoroute", "check", "connect", "delete", "find", "flip", "generate", "get",
         "label", "list", "mark", "measure", "move", "query", "read", "refill", "render",
         "reply", "restore", "rotate", "route", "set", "start", "tidy", "export", "diff",
-        "place", "match",
+        "place", "match", "import",
     }
     for name in names:
         assert re.fullmatch(r"[a-z][a-z0-9]*(_[a-z0-9]+)*", name), name

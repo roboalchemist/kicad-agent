@@ -259,6 +259,14 @@ class Engine:
         """Replace the Edge.Cuts shapes with a (rounded) rectangle. ``{"bbox": [x, y, w, h]}``."""
         return self.call("set_outline", board, width=width, height=height, x=x, y=y, corner_radius=corner_radius)
 
+    def add_keepout(self, board: str | os.PathLike[str], polygon: Sequence[Sequence[float]],
+                    layers: Sequence[str] | None = None, no_tracks: bool = True,
+                    no_vias: bool = True, no_pours: bool = True,
+                    no_pads: bool = False) -> dict:
+        return self.call("add_keepout", board, polygon=[list(p) for p in polygon],
+                         layers=list(layers) if layers else None, no_tracks=no_tracks,
+                         no_vias=no_vias, no_pours=no_pours, no_pads=no_pads)
+
     def set_outline_polygon(self, board: str | os.PathLike[str],
                             points: Sequence[Sequence[float]]) -> dict:
         return self.call("set_outline_polygon", board, points=[list(p) for p in points])

@@ -13,6 +13,7 @@ to it without guessing. The rules are deliberately operational, not a full DRC e
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -81,6 +82,11 @@ def class_for(rules: dict[str, Any], net: str) -> tuple[str, dict[str, Any]]:
     return "Default", classes.get("Default") or DEFAULT["netclasses"]["Default"]
 
 
+def _microstrip_z0(width_mm: float, er: float, height_mm: float) -> float:
+    """IPC-2141 microstrip approximation; good enough to flag a clearly wrong width."""
+    return 87.0 / math.sqrt(er + 1.41) * math.log(5.98 * height_mm / (0.8 * width_mm + 0.035))
+
+
 def violations(index: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, Any]]:
     """Tracks narrower than their class, and a stackup that disagrees with the copper layers."""
     out: list[dict[str, Any]] = []
@@ -100,6 +106,25 @@ def violations(index: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, A
             })
     stackup = rules.get("stackup")
     if stackup:
+        er = float(stackup.get("er") or 4.4)
+        height = float(stackup.get("dielectric_height") or 0.2)
+        for track in index.get("tracks", []):
+            name, spec = class_for(rules, track.get("net") or "")
+            target = spec.get("impedance")
+            width = float(track.get("width") or 0)
+            if not target or not width:
+                continue
+            z0 = _microstrip_z0(width, er, height)
+            if abs(z0 - float(target)) / float(target) > 0.15:
+                out.append({
+                    "type": "impedance",
+                    "net": track.get("net"),
+                    "class": name,
+                    "detail": f"{track.get('net') or 'track'} is {width:.2f} mm (~{z0:.0f} ohm), "
+                              f"class {name} targets {float(target):.0f} ohm",
+                    "uuid": track.get("uuid"),
+                })
+                break  # one example per class is enough
         copper = [layer for layer in (index.get("board", {}).get("layers") or [])
                   if str(layer).endswith(".Cu")]
         declared = int(stackup.get("layers") or 0)

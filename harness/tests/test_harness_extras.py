@@ -74,3 +74,90 @@ def test_knowledge_search_finds_a_rule_line() -> None:
 def test_outline_can_be_an_imported_polygon(engine, board) -> None:
     result = engine.set_outline_polygon(board, [[0, 0], [30, 0], [30, 20], [0, 20]])
     assert result["bbox"] == [0.0, 0.0, 30.0, 20.0]
+
+
+def test_dxf_polygon_and_units() -> None:
+    from kicad_harness.engine import dxf
+
+    text = "\n".join([
+        "0", "SECTION", "2", "ENTITIES",
+        "0", "LWPOLYLINE", "8", "0",
+        "10", "0", "20", "0",
+        "10", "10", "20", "0",
+        "10", "10", "20", "5",
+        "10", "0", "20", "5",
+        "0", "ENDSEC",
+    ])
+    assert dxf.polygon(text) == [(0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (0.0, 5.0)]
+    assert dxf.units_mm("$INSUNITS\n4\n") == 1.0
+
+
+def test_keepout_is_written_as_a_rule_area(engine, board) -> None:
+    result = engine.add_keepout(board, [[1, 1], [9, 1], [9, 9], [1, 9]])
+    assert result.get("uuid")
+    text = Path(board).read_text(encoding="utf-8")
+    assert "keepout" in text.lower() or "rule_area" in text.lower()
+
+
+def test_impedance_mismatch_is_reported() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    rules = design_rules.load(SimpleNamespace(path=Path("/tmp/none")))
+    rules["netclasses"]["HS"] = {"nets": ["CLK"], "width": 0.2, "clearance": 0.2,
+                                 "impedance": 50, "explicit": True}
+    rules["stackup"] = {"layers": 2, "material": "FR4", "thickness": 1.6,
+                        "er": 4.4, "dielectric_height": 0.2}
+    index = {"tracks": [{"net": "CLK", "width": 0.2, "uuid": "t"}],
+             "board": {"layers": ["F.Cu", "B.Cu"]}}
+    assert any(v["type"] == "impedance" for v in design_rules.violations(index, rules))
+
+
+def test_goal_manufacturing_and_layout_metric_criteria() -> None:
+    from kicad_harness.agent import goal
+
+    authored = {"criteria": [
+        {"id": "mfg", "type": "manufacturing"},
+        {"id": "align", "type": "layout_metric", "metric": "alignment_ratio", "max": 0.9, "min": 0.4},
+    ]}
+    facts = {"manufacturing": {"present": True, "stale": False},
+             "schematic_metrics": {"alignment_ratio": 0.55}}
+    result = goal.evaluate(authored, {}, facts, [])
+    mfg = next(c for c in result["criteria"] if c["id"] == "mfg")
+    align = next(c for c in result["criteria"] if c["id"] == "align")
+    assert mfg["passed"] is True and align["passed"] is True
+    stale = goal.evaluate(authored, {}, {"manufacturing": {"present": True, "stale": True},
+                                         "schematic_metrics": {"alignment_ratio": 0.2}}, [])
+    assert next(c for c in stale["criteria"] if c["id"] == "mfg")["passed"] is False
+    assert next(c for c in stale["criteria"] if c["id"] == "align")["passed"] is False
+
+
+def test_testpoint_symbol_and_footprint_share_a_reference(tmp_path, engine, board) -> None:
+    """Test points only keep parity if the schematic symbol and board footprint share the ref."""
+    from kicad_harness.engine import schematic as sch
+
+    libs = {"Connector": sch.read_library("/usr/share/kicad/symbols/Connector.kicad_sym")}
+    doc = sch.Schematic.create(tmp_path / "tp.kicad_sch", libraries=libs)
+    doc.add_symbol("Connector:TestPoint", "TP1", 20.0, 20.0, value="GND",
+                   footprint="TestPoint:TestPoint_Pad_D1.5mm")
+    assert "TP1" in {p.reference for p in doc.placements()}
+    result = engine.call("add_footprint", board=board,
+                         footprint="TestPoint:TestPoint_Pad_D1.5mm", ref="TP1", value="GND",
+                         x=12.0, y=9.0, rotation=0.0, side="front",
+                         footprint_dirs=["/usr/share/kicad/footprints"])
+    assert result.get("ref") == "TP1"
+
+
+def test_live_pi_relay_is_clean_when_present() -> None:
+    """Golden regression on the reference design, when this machine has it."""
+    import pytest
+
+    live = Path("/srv/ecad-agent/harness/var/workspaces/pi-relay")
+    if not (live / "schematic.kicad_sch").is_file():
+        pytest.skip("pi-relay workspace not present")
+    from kicad_harness.engine import kicad_cli
+    from kicad_harness.engine.schematic import Schematic
+
+    doc = Schematic.load(live / "schematic.kicad_sch")
+    assert layout.analyze(doc)["score"] == 0
+    assert kicad_cli.erc(live / "schematic.kicad_sch")["counts"]["errors"] == 0

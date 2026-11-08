@@ -208,6 +208,18 @@ function ToolRow({ tool, levelLabel }: { tool: SettingsTool; levelLabel: string 
       {(open || tool.guidance) && (
         <div className="settings-tool-body">
           {tool.guidance && <p className="settings-tool-guidance">{tool.guidance}</p>}
+          {open && tool.example && (
+            <div className="settings-tool-example">
+              <span className="muted">example</span> <code>{tool.example}</code>
+            </div>
+          )}
+          {open && tool.failure_modes.length > 0 && (
+            <ul className="settings-tool-failures">
+              {tool.failure_modes.map((mode) => (
+                <li key={mode}>{mode}</li>
+              ))}
+            </ul>
+          )}
           {open && tool.description && <p className="muted settings-tool-full">{tool.description}</p>}
         </div>
       )}

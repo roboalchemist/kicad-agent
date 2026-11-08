@@ -145,19 +145,19 @@ thermal), plus knowledge search.
 | Recommendation | Status |
 |---|---|
 | Net classes + stackup | **done** — `set_net_class`, `set_stackup`, `add_track` uses the class width, `check` reports width/stackup violations |
-| Manufacturing export + gate | **partial** — `export_manufacturing` writes Gerbers/drill/P&P/BOM/manifest and `check` reports presence/staleness; no goal criterion yet |
+| Manufacturing export + gate | **done** — package + manifest; `check` reports presence/staleness; `manufacturing` goal criterion |
 | Generator fix | **covered by tests** — scripted end-to-end draw test passes; no dedicated regression on the skidl cache |
 | Connection retry | **done** — `stream_with_token_retry` retries provider connection errors |
 | Diff pairs / length match | **partial** — `route_diff_pair` (parallel tracks), `match_length` (report); no serpentine adjustment, no impedance check |
-| Mechanical outline | **partial** — `set_board_outline(points=...)` polygon; no DXF/STEP parser, no keepout zones |
+| Mechanical outline | **done (except STEP)** — polygon outline, `import_outline` DXF (LWPOLYLINE/LINE) and `add_keepout` rule areas |
 | Silkscreen automation | **done** — `place_silkscreen` collision-aware reference placement |
-| Test points | **not done** — needs schematic+board synchronisation so parity/BOM stay valid |
+| Test points | **done** — `place_test_points` adds a symbol and footprint with the same ref; engine/symbol test |
 | Thermal vias | **done** — `add_thermal_vias` |
 | BOM lifecycle | **partial** — `set_bom_alternates` + alternates column in the BOM; no MSL/lead-time fields |
-| Layout metrics | **done** — owner distance, alignment, wire length, crossings, utilisation in `check`; rule cited in findings |
+| Layout metrics | **done** — owner distance, alignment, wire length, crossings, utilisation; `layout_metric` goal criterion |
 | Netlist/BOM diff | **done** — `diff_versions` |
-| Uniform tool contract | **not done** |
+| Uniform tool contract | **partial** — checks/summaries/read tools carry `ok`; image results remain a list |
 | Playbook once per run | **done** |
 | Knowledge sync + search | **done** — drift test + `read_reference(query=...)` |
-| Golden regression suite | **partial** — 318 tests, no dedicated pi-relay fixture |
-| UI tool examples / project management | **not done** |
+| Golden regression suite | **partial** — conditional pi-relay test (score 0, ERC 0) + 322 tests |
+| UI tool examples / project management | **partial** — examples and failure modes on the tool page; rename/delete not done |

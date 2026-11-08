@@ -892,6 +892,33 @@ def add_zone(board, net, layer, polygon=None, clearance=0.3, min_width=0.25, mar
 
 
 @rpc
+def add_keepout(board, polygon, layers=None, no_tracks=True, no_vias=True, no_pours=True,
+                no_pads=False):
+    """Add a rule-area keepout: no tracks/vias/pours (optionally no pads) inside the polygon."""
+    pts = _points(polygon, "polygon", 3)
+
+    def edit(b):
+        zone = pcbnew.ZONE(b)
+        zone.SetIsRuleArea(True)
+        zone.SetDoNotAllowTracks(bool(no_tracks))
+        zone.SetDoNotAllowVias(bool(no_vias))
+        zone.SetDoNotAllowZoneFills(bool(no_pours))
+        zone.SetDoNotAllowPads(bool(no_pads))
+        layer_set = pcbnew.LSET()
+        for name in (layers or ["F.Cu", "B.Cu"]):
+            layer_set.AddLayer(_copper_layer(b, name))
+        zone.SetLayerSet(layer_set)
+        shape = zone.Outline()
+        shape.NewOutline()
+        for x, y in pts:
+            shape.Append(_iu(x), _iu(y))
+        b.Add(zone)
+        return {"uuid": zone.m_Uuid.AsString()}
+
+    return _edit(board, edit)
+
+
+@rpc
 def refill_zones(board):
     """Refill every zone on the board (the file is left alone when there are none)."""
     path = _abspath(board)

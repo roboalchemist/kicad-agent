@@ -191,6 +191,8 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
             "board_laid_out": ws.board_path.is_file(),
             "unconnected_pins": floating,
             "schematic_layout": await asyncio.to_thread(_schematic_layout_facts, ws),
+            "schematic_metrics": await asyncio.to_thread(_schematic_metrics_facts, ws),
+            "manufacturing": None,
         }
         evaluation = goals.evaluate(ws.goal(), {}, fake, threads)
         ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
@@ -216,6 +218,8 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
         "requirements": facts["requirements"],
         "requirement_gaps": facts["requirement_gaps"],
         "schematic_layout": await asyncio.to_thread(_schematic_layout_facts, ws),
+        "schematic_metrics": await asyncio.to_thread(_schematic_metrics_facts, ws),
+        "manufacturing": await asyncio.to_thread(_manufacturing_facts, ws),
     }
     evaluation = goals.evaluate(ws.goal(), index, drc, threads)
     ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
@@ -248,6 +252,29 @@ def _schematic_image(svc, ws) -> tuple[bytes, str]:
     if not out.is_file():
         render_mod.schematic_png(ws.schematic_path, out)
     return out.read_bytes(), f"/api/renders/{out.name}"
+
+def _schematic_metrics_facts(ws) -> dict[str, Any] | None:
+    from kicad_harness.engine import layout
+    from kicad_harness.engine.schematic import Schematic
+
+    if not ws.schematic_path.is_file():
+        return None
+    try:
+        return layout.metrics(Schematic.load(ws.schematic_path))
+    except Exception:
+        return None
+
+
+def _manufacturing_facts(ws) -> dict[str, Any] | None:
+    from kicad_harness.engine import manufacturing
+
+    if not ws.board_path.is_file():
+        return None
+    try:
+        return manufacturing.status(ws)
+    except Exception:
+        return None
+
 
 def _parts_facts(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
     """Ground truth about which parts exist: schematic symbols and board footprints."""
@@ -837,6 +864,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         threads = svc.store.review.list(ctx.deps.state.design)
         ex, ey, ew, eh = index["board"]["edge_bbox"]
         summary = {
+            "ok": True,
             "design": ctx.deps.state.design,
             "head": (ctx.deps.state.head or "")[:8],
             "board_outline": {"x": round(ex, 3), "y": round(ey, 3), "width": round(ew, 3), "height": round(eh, 3)},
@@ -945,6 +973,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 layout_report = {"ok": False, "score": None, "error": _engine_error_text(exc)}
             evaluation = await _evaluate(ctx)
             result: dict = {
+                "ok": True,
                 "phase": "schematic",
                 "erc": erc_counts,
                 "layout": layout_report,
@@ -996,6 +1025,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             except Exception:
                 schematic_report = None
         result = {
+            "ok": True,
             "phase": "board",
             "drc_counts": drc.get("counts", {}),
             "violations": [brief(v) for v in drc.get("violations", [])[:30]],
@@ -1366,6 +1396,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         values = list(lengths.values())
         delta = round(max(values) - min(values), 2) if values else 0.0
         return ToolReturn(return_value={
+            "ok": True,
             "lengths_mm": lengths,
             "delta_mm": delta,
             "tolerance_mm": tolerance_mm,
@@ -1401,6 +1432,91 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             risky=True,
         )
 
+    @agent.tool(sequential=True)
+    async def add_keepout(
+        ctx: RunContext[HarnessDeps], points: list[list[float]],
+        layers: list[str] | None = None, no_tracks: bool = True, no_vias: bool = True,
+        no_pours: bool = True, no_pads: bool = False,
+    ) -> ToolReturn:
+        """Add a rule-area keepout through `points` [[x,y],...]: no tracks/vias/pours (optionally
+        pads) inside it. Use for antennas, mounting hardware and high-voltage gaps."""
+        if len(points) < 3:
+            return ToolReturn(return_value={"ok": False, "error": "a keepout needs 3+ points"})
+        return await _edit(
+            ctx, "add_keepout", f"Add keepout ({len(points)} points)",
+            lambda b: engine(ctx).call(
+                "add_keepout", board=b, polygon=points, layers=layers,
+                no_tracks=no_tracks, no_vias=no_vias, no_pours=no_pours, no_pads=no_pads,
+            ),
+        )
+
+    @agent.tool(sequential=True)
+    async def import_outline(ctx: RunContext[HarnessDeps], path: str) -> ToolReturn:
+        """Set the board outline from an ASCII DXF LWPOLYLINE (mechanical drawing). Relative
+        paths are resolved inside the design workspace."""
+        from kicad_harness.engine import dxf
+
+        ws = _ws(ctx)
+        source = Path(path) if Path(path).is_absolute() else ws.path / path
+        if not source.is_file():
+            return ToolReturn(return_value={"ok": False, "error": f"no DXF at {source}"})
+        try:
+            text = source.read_text(encoding="utf-8", errors="ignore")
+            points = dxf.polygon(text)
+            factor = dxf.units_mm(text)
+            points = [[x * factor, y * factor] for x, y in points]
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        if len(points) < 3:
+            return ToolReturn(return_value={"ok": False,
+                                            "error": "no LWPOLYLINE (or LINE loop) with 3+ points found"})
+        return await _edit(
+            ctx, "import_outline", f"Import outline from {source.name}",
+            lambda b: engine(ctx).call("set_outline_polygon", board=b, points=points),
+            risky=True,
+        )
+
+    @agent.tool(sequential=True)
+    async def place_test_points(
+        ctx: RunContext[HarnessDeps], nets: list[str],
+        footprint: str = "TestPoint:TestPoint_Pad_D1.5mm",
+        symbol: str = "Connector:TestPoint",
+    ) -> ToolReturn:
+        """Place one test point per net, as a schematic symbol *and* a board footprint with the
+        same reference, so schematic/board parity and the BOM stay valid. Points sit along the
+        bottom board edge and take the net's class."""
+        ws = _ws(ctx)
+        if not ws.board_path.is_file():
+            return ToolReturn(return_value={"ok": False, "error": "this design has no board yet"})
+        if not ws.schematic_path.is_file():
+            return ToolReturn(return_value={"ok": False, "error": "this design has no schematic"})
+
+        board_hash, index = await _working(ctx)
+        ex, ey, ew, eh = index["board"]["edge_bbox"]
+
+        def work(board) -> dict:
+            doc = _schematic(ctx, "Connector")
+            existing = {p.reference for p in doc.placements() if p.reference.startswith("TP")}
+            engine_obj = engine(ctx)
+            added = []
+            for i, net in enumerate(nets):
+                ref = f"TP{1 + i}"
+                while ref in existing:
+                    i += 1
+                    ref = f"TP{1 + i}"
+                x = ex + 10 + i * 8
+                y = ey + eh - 8
+                doc.add_symbol(symbol, ref, x, y, value=net, footprint=footprint)
+                engine_obj.call("add_footprint", board=board, footprint=footprint, ref=ref,
+                                value=net, x=x, y=y, rotation=0, side="front",
+                                footprint_dirs=[str(p) for p in ctx.deps.services.config.footprint_dirs])
+                engine_obj.call("set_pad_net", board=board, ref=ref, pad="1", net=net)
+                added.append({"ref": ref, "net": net, "x": round(x, 2), "y": round(y, 2)})
+            doc.save()
+            return {"added": added}
+
+        return await _edit(ctx, "place_test_points", f"Place {len(nets)} test point(s)", work)
+
     @agent.tool
     async def set_net_class(
         ctx: RunContext[HarnessDeps],
@@ -1428,16 +1544,18 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
     async def set_stackup(
         ctx: RunContext[HarnessDeps], layers: int, material: str = "FR4",
         thickness: float = 1.6, impedance: dict | None = None,
+        er: float = 4.4, dielectric_height: float = 0.2,
     ) -> ToolReturn:
-        """Declare the stackup (copper layers, material, thickness, optional impedance map).
-
-        `check` compares the declared copper count with the board and reports a mismatch."""
+        """Declare the stackup (copper layers, material, thickness, er, dielectric height,
+        optional impedance map). `check` compares the declared copper count with the board and
+        flags traces whose width misses the class impedance by >15%."""
         from kicad_harness.engine import design_rules
 
         ws = _ws(ctx)
         rules = await asyncio.to_thread(design_rules.load, ws)
         rules["stackup"] = {"layers": layers, "material": material, "thickness": thickness,
-                            "impedance": impedance or {}}
+                            "impedance": impedance or {}, "er": er,
+                            "dielectric_height": dielectric_height}
         await asyncio.to_thread(design_rules.save, ws, rules)
         return ToolReturn(return_value={"ok": True, **rules["stackup"]})
 
@@ -1650,6 +1768,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         except Exception as exc:  # measurement must not hide the schematic itself
             layout_report = {"ok": False, "score": None, "error": _engine_error_text(exc)}
         summary = {
+            "ok": True,
             "design": ctx.deps.state.design,
             "phase": ws.phase(),
             "brief": ws.brief(),

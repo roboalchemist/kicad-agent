@@ -37,6 +37,8 @@ CRITERIA: dict[str, tuple[tuple[str, ...], str]] = {
     "requirements": (("max_short",), "brief requirements met (shortfalls <= {max_short})"),
     "schematic_parity": (("max_missing",), "schematic and board describe the same parts (missing <= {max_missing})"),
     "schematic_legibility": (("max",), "schematic layout violations <= {max}"),
+    "manufacturing": ((), "manufacturing package present and current"),
+    "layout_metric": (("metric", "max"), "layout metric {metric} <= {max}"),
 }
 
 Measure = Callable[[dict, str, str], dict]
@@ -239,6 +241,29 @@ def evaluate_criterion(
                 result.update(value=value, passed=value <= c["max"],
                               detail=(f"{value} layout violation(s) (max {c['max']})"
                                       + (f": {named}" if named else "")))
+        elif ctype == "manufacturing":
+            mfg = (drc or {}).get("manufacturing")
+            if not isinstance(mfg, dict):
+                result.update(value=None, passed=False, detail="manufacturing package was not measured")
+            else:
+                ok = bool(mfg.get("present")) and not mfg.get("stale")
+                result.update(value={"present": mfg.get("present"), "stale": mfg.get("stale")},
+                              passed=ok,
+                              detail=("package present and current" if ok else
+                                      ("no manufacturing package" if not mfg.get("present")
+                                       else "manufacturing package is older than the board")))
+        elif ctype == "layout_metric":
+            metrics = (drc or {}).get("schematic_metrics") or {}
+            value = metrics.get(c.get("metric"))
+            if value is None:
+                result.update(value=None, passed=False,
+                              detail=f"layout metric {c.get('metric')!r} was not measured")
+            else:
+                ok = float(value) <= float(c["max"]) and (
+                    c.get("min") is None or float(value) >= float(c["min"]))
+                result.update(value=value, passed=ok,
+                              detail=f"{c.get('metric')} = {value} (max {c['max']}"
+                                     + (f", min {c['min']}" if c.get("min") is not None else "") + ")")
         elif ctype == "unconnected_pins":
             value = int((drc or {}).get("unconnected_pins", 0))
             result.update(value=value, passed=value <= c["max"],

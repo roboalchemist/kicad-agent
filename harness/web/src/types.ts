@@ -501,6 +501,8 @@ export interface SettingsTool {
   summary: string;
   guidance: string;
   description: string;
+  example: string;
+  failure_modes: string[];
 }
 
 export interface SettingsWorkflowStep {
