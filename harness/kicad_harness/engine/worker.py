@@ -827,6 +827,34 @@ def set_outline(board, width, height, x=0, y=0, corner_radius=0):
 
 
 @rpc
+def set_outline_polygon(board, points):
+    """Replace Edge.Cuts with a closed polygon through ``points`` (mechanical outline import)."""
+    pts = _points(points, "points", 3)
+    if pts[0] != pts[-1]:
+        pts = pts + [pts[0]]
+
+    def edit(b):
+        for d in list(b.GetDrawings()):
+            if d.GetLayer() == pcbnew.Edge_Cuts and d.GetClass() == "PCB_SHAPE":
+                b.Delete(d)
+        width = b.GetDesignSettings().GetLineThickness(pcbnew.Edge_Cuts)
+        for start, end in zip(pts, pts[1:]):
+            segment = pcbnew.PCB_SHAPE(b)
+            segment.SetShape(pcbnew.SHAPE_T_SEGMENT)
+            segment.SetLayer(pcbnew.Edge_Cuts)
+            segment.SetStart(_vec(*start))
+            segment.SetEnd(_vec(*end))
+            segment.SetWidth(width)
+            b.Add(segment)
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return {"bbox": [round(min(xs), 6), round(min(ys), 6),
+                         round(max(xs) - min(xs), 6), round(max(ys) - min(ys), 6)]}
+
+    return _edit(board, edit)
+
+
+@rpc
 def add_zone(board, net, layer, polygon=None, clearance=0.3, min_width=0.25, margin=0.5):
     """Add a copper zone (default: the board outline inset by ``margin``) and fill it."""
     pts = None if polygon is None else _points(polygon, "polygon", 3)

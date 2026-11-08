@@ -223,6 +223,19 @@ _BUDGET_TOO_LARGE = (
     "reduce the length",
 )
 
+# Transient network failures between the harness and the model provider. They arrive as
+# ConnectionError / httpx.ConnectError / "Connection error." depending on the SDK; a retry with a
+# short backoff is safe because nothing was streamed.
+_CONNECTION_ERRORS = (
+    "connection error",
+    "connectionerror",
+    "connecterror",
+    "connection reset",
+    "temporarily unavailable",
+    "server disconnected",
+    "remote protocol error",
+)
+
 
 def next_budget(budget: int, exc: BaseException, min_budget: int = 4096, max_budget: int = 131072) -> int | None:
     """The budget to retry with after ``exc``, or ``None`` if this error is not about the budget.
@@ -272,10 +285,16 @@ async def stream_with_token_retry(
             return
         except Exception as exc:  # noqa: BLE001 - provider errors arrive in many types
             retry = next_budget(budget, exc, min_budget, max_budget) if attempts < max_attempts else None
-            if retry is None:
-                raise
-            log.warning("retrying with max_tokens=%d after: %s", retry, str(exc)[:120])
-            budget = retry
+            if retry is not None:
+                log.warning("retrying with max_tokens=%d after: %s", retry, str(exc)[:120])
+                budget = retry
+                continue
+            message = str(exc).lower()
+            if attempts < max_attempts and any(marker in message for marker in _CONNECTION_ERRORS):
+                await asyncio.sleep(min(2.0, 0.5 * attempts))
+                log.warning("retrying after provider connection error: %s", str(exc)[:120])
+                continue
+            raise
 
 
 async def _rev_hash(svc: Services, ws, rev: str) -> str:

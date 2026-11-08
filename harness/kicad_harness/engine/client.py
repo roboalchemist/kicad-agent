@@ -259,6 +259,10 @@ class Engine:
         """Replace the Edge.Cuts shapes with a (rounded) rectangle. ``{"bbox": [x, y, w, h]}``."""
         return self.call("set_outline", board, width=width, height=height, x=x, y=y, corner_radius=corner_radius)
 
+    def set_outline_polygon(self, board: str | os.PathLike[str],
+                            points: Sequence[Sequence[float]]) -> dict:
+        return self.call("set_outline_polygon", board, points=[list(p) for p in points])
+
     def add_zone(self, board: str | os.PathLike[str], net: str, layer: str,
                  polygon: Sequence[Sequence[float]] | None = None, clearance: float = 0.3,
                  min_width: float = 0.25, margin: float = 0.5) -> dict:

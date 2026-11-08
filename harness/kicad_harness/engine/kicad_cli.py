@@ -402,3 +402,41 @@ def stats(board: str | os.PathLike[str], *, config: Config | None = None, timeou
         except (OSError, ValueError) as exc:
             raise EngineError("KiCadCliError", f"kicad-cli wrote no readable stats: {exc}") from exc
     return _numbers(raw)
+
+def export_gerbers(board: str | os.PathLike[str], out_dir: str | os.PathLike[str],
+                   layers: Sequence[str] | None = None, *, config: Config | None = None,
+                   timeout: float = 300) -> list[Path]:
+    """Production Gerbers (copper, mask, silk, outline) into ``out_dir``."""
+    path = _board_path(board)
+    out = Path(out_dir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    chosen = list(layers or ["F.Cu", "B.Cu", "F.Mask", "B.Mask", "F.Silkscreen",
+                             "B.Silkscreen", "Edge.Cuts"])
+    run(["pcb", "export", "gerbers", "--layers", ",".join(chosen), "-o", str(out), str(path)],
+        board=path, config=config, timeout=timeout)
+    return sorted(p for p in out.iterdir() if p.is_file())
+
+
+def export_drill(board: str | os.PathLike[str], out_dir: str | os.PathLike[str], *,
+                 config: Config | None = None, timeout: float = 300) -> list[Path]:
+    """Excellon drill files into ``out_dir``."""
+    path = _board_path(board)
+    out = Path(out_dir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run(["pcb", "export", "drill", "-o", str(out), str(path)],
+        board=path, config=config, timeout=timeout)
+    return sorted(p for p in out.iterdir() if p.is_file())
+
+
+def export_pos(board: str | os.PathLike[str], out: str | os.PathLike[str], *,
+               config: Config | None = None, timeout: float = 300) -> Path:
+    """Pick-and-place CSV (mm) at ``out``."""
+    path = _board_path(board)
+    target = Path(out).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    run(["pcb", "export", "pos", "-o", str(target), "--format", "csv", "--units", "mm", str(path)],
+        board=path, config=config, timeout=timeout)
+    if not target.is_file():
+        raise EngineError("KiCadCliError", f"kicad-cli wrote no position file to {target}")
+    return target
+

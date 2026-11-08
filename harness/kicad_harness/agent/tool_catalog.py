@@ -26,6 +26,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "get_design": ("global", "Start every session here: outline, parts, nets, DRC and goal state."),
     "set_goal": ("global", "Turn the user's words into machine-checkable criteria before editing."),
     "list_versions": ("global", "Use before restoring, to find the version you want."),
+    "diff_versions": ("global", "Compare netlists or BOMs between two revisions before trusting a change."),
     "restore_version": ("global", "Restore a known-good state instead of hand-reverting many edits."),
     "list_reviews": ("global", "Read the user's review comments before planning the next edit."),
     "reply_review": ("global", "Answer a review comment; include the reason, not just 'done'."),
@@ -34,6 +35,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     # -- BOM / sourcing -------------------------------------------------------------------
     "find_parts": ("bom", "Search by part number or category; prefer basic parts with stock."),
     "read_part_datasheet": ("bom", "Confirm a pinout or rating; never invent pin numbers."),
+    "set_bom_alternates": ("bom", "Record second-source LCSC codes; they appear in the manufacturing BOM."),
     # -- schematic ------------------------------------------------------------------------
     "generate_schematic": ("schematic", "Draw a whole design from a parts/nets list instead of placing symbols one by one."),
     "add_symbol": ("schematic", "Place one symbol when extending or fixing a sheet."),
@@ -45,6 +47,9 @@ TOOLS: dict[str, tuple[str, str]] = {
     "start_board": ("schematic", "Only after ERC 0 and legible 0: create the board from the netlist."),
     # -- board ----------------------------------------------------------------------------
     "set_board_outline": ("board", "Set the mechanical outline first; everything else depends on it."),
+    "set_net_class": ("board", "Declare width/clearance/impedance per net group; new tracks use it and check flags narrower ones."),
+    "set_stackup": ("board", "Declare copper layers, material and thickness; check compares it with the board."),
+    "export_manufacturing": ("board", "Write Gerbers, drill, pick-and-place and BOM plus a manifest for ordering."),
     "move_footprint": ("board", "Place by function, then route; coordinates are absolute mm."),
     "rotate_footprint": ("board", "Rotate about the anchor to face pins toward their partners."),
     "flip_footprint": ("board", "Move a part to the other side when the top is congested."),
@@ -52,6 +57,10 @@ TOOLS: dict[str, tuple[str, str]] = {
     "find_footprints": ("board", "Find the footprint a placed part needs."),
     "add_track": ("board", "Hand-route short or critical nets; prefer 45-degree bends."),
     "add_via": ("board", "Change layer where a track must cross."),
+    "add_thermal_vias": ("board", "Ring vias around a power pad so heat reaches the plane."),
+    "route_diff_pair": ("board", "Route a differential pair as two parallel tracks with one spacing."),
+    "match_length": ("board", "Measure routed lengths and check a group matches within tolerance."),
+    "place_silkscreen": ("board", "Move reference texts to collision-free spots after placement."),
     "autoroute": ("board", "Route the bulk automatically; rip up first to re-route cleanly."),
     "add_copper_zone": ("board", "Pour a plane (GND, power) after placement."),
     "refill_zones": ("board", "Refill every pour after moving parts or tracks."),
@@ -161,7 +170,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Stackup & design rules first",
          "detail": "Layer count, materials, impedance and design rules must exist before placement so "
                    "violations surface immediately.",
-         "tools": ["get_design"], "gate": "stackup and rules approved",
+         "tools": ["set_stackup", "set_net_class", "get_design"], "gate": "stackup and rules approved",
          "ref": "pcb-design-process#Phase Details"},
         {"step": "Outline, holes & keepouts",
          "detail": "Board outline, mounting holes, connector locations and mechanical keepouts from "
@@ -198,7 +207,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Pours, stitching & thermal",
          "detail": "Refill after the last move; thermal relief on pads, stitching vias, no floating "
                    "islands.",
-         "tools": ["add_copper_zone", "refill_zones", "add_via"],
+         "tools": ["add_copper_zone", "refill_zones", "add_via", "add_thermal_vias"],
          "gate": "pours refilled, copper balanced",
          "ref": "pcb-copper-pours#Thermal Relief"},
         {"step": "Verify like a reviewer",
@@ -210,7 +219,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Manufacturing files & handoff",
          "detail": "Gerbers, drill, pick-and-place and the final BOM; freeze the version and record "
                    "the review.",
-         "tools": ["list_versions", "restore_version"],
+         "tools": ["export_manufacturing", "list_versions", "restore_version"],
          "gate": "outputs generated and version tagged",
          "ref": "pcb-design-process#Phase Details"},
     ],

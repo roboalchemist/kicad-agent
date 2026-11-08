@@ -923,8 +923,8 @@ def findings(doc: Schematic) -> list[str]:
         if passive in boxes and owner in boxes:
             distance = math.dist(centre(passive), centre(owner))
             if distance > 30:
-                out.append(f"{passive} is {distance:.0f} mm from {owner}, the part it serves; "
-                           "place them together")
+                out.append(f"{passive} is {distance:.0f} mm from {owner}, the part it serves "
+                           "(pcb-placement#Priority Order calls for 3-5 mm)")
 
     net_pins: dict[str, list[tuple[str, str]]] = {}
     for (ref, number), name in pin_net.items():
@@ -1034,3 +1034,56 @@ def _align_symbols(doc: Schematic, pin_net: dict[tuple[str, str], str], *,
         if not moved_this_pass:
             break
     return aligned
+
+def metrics(doc: Schematic) -> dict[str, Any]:
+    """Numbers behind the picture: ownership distance, channel alignment, wire length, sheet use."""
+    pin_net = _alias_nets(doc)
+    owner_of, _rails = _owners(doc, pin_net)
+    boxes = symbol_boxes(doc)
+
+    def centre(ref: str) -> tuple[float, float]:
+        box = boxes[ref]
+        return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+    distances = [math.dist(centre(passive), centre(owner))
+                 for passive, owner in owner_of.items()
+                 if passive in boxes and owner in boxes]
+    distances.sort()
+
+    segments = _segments(doc)
+    wire_length = sum(math.dist(a, b) for a, b in segments)
+
+    net_pins: dict[str, list[tuple[str, str]]] = {}
+    for (ref, number), name in pin_net.items():
+        net_pins.setdefault(name, []).append((ref, number))
+    pairs = 0
+    aligned = 0
+    for _name, pins in net_pins.items():
+        if len(pins) != 2:
+            continue
+        (ref_a, pin_a), (ref_b, pin_b) = pins
+        a = doc.pin_position(doc._placement(ref_a), pin_a)
+        b = doc.pin_position(doc._placement(ref_b), pin_b)
+        if a is None or b is None or abs(a[0] - b[0]) < 5:
+            continue
+        pairs += 1
+        if abs(a[1] - b[1]) <= 1.0:
+            aligned += 1
+
+    page_w, page_h = _paper(doc)[1]
+    xs = [box[0] for box in boxes.values()] + [box[2] for box in boxes.values()]
+    ys = [box[1] for box in boxes.values()] + [box[3] for box in boxes.values()]
+    content_area = (max(xs) - min(xs)) * (max(ys) - min(ys)) if xs else 0.0
+
+    return {
+        "owner_distance_median_mm": round(distances[len(distances) // 2], 1) if distances else None,
+        "owner_distance_max_mm": round(distances[-1], 1) if distances else None,
+        "pairs": pairs,
+        "aligned_pairs": aligned,
+        "alignment_ratio": round(aligned / pairs, 2) if pairs else None,
+        "wire_length_mm": round(wire_length, 0),
+        "wire_crossings": len([1 for i, (a, b) in enumerate(segments)
+                               for c, d in segments[i + 1:] if _segments_cross(a, b, c, d)]),
+        "sheet_utilisation": round(content_area / (page_w * page_h), 2) if page_w and page_h else None,
+    }
+

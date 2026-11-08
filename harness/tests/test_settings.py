@@ -103,6 +103,22 @@ async def test_settings_include_playbooks_and_the_reference_library(services) ->
     assert "read_reference" in {tool["name"] for tool in body["tools"]}
 
 
+def test_bundled_knowledge_matches_the_repo_rules() -> None:
+    """Drift guard: the deployed knowledge must be the repo's .agents/rules, byte for byte."""
+    from pathlib import Path
+
+    from kicad_harness.agent import knowledge
+
+    repo_rules = Path(__file__).resolve().parents[2] / ".agents" / "rules"
+    if not repo_rules.is_dir():
+        import pytest
+        pytest.skip("repo rules not present in this deployment")
+    for source in repo_rules.glob("*.md"):
+        bundled = knowledge.RULES / source.name
+        assert bundled.is_file(), source.name
+        assert bundled.read_text(encoding="utf-8") == source.read_text(encoding="utf-8"), source.name
+
+
 def test_every_workflow_step_cites_a_real_rule_section() -> None:
     from kicad_harness.agent import tool_catalog
 
@@ -128,8 +144,16 @@ def test_tool_surface_uses_one_verb_object_name_per_action() -> None:
     verbs = {
         "add", "autoroute", "check", "connect", "delete", "find", "flip", "generate", "get",
         "label", "list", "mark", "measure", "move", "query", "read", "refill", "render",
-        "reply", "restore", "rotate", "route", "set", "start", "tidy",
+        "reply", "restore", "rotate", "route", "set", "start", "tidy", "export", "diff",
+        "place", "match",
     }
     for name in names:
         assert re.fullmatch(r"[a-z][a-z0-9]*(_[a-z0-9]+)*", name), name
         assert name.split("_")[0] in verbs, f"{name}: verb outside the convention"
+
+
+def test_phase_playbook_cites_the_rules() -> None:
+    from kicad_harness.agent import knowledge
+
+    assert len(knowledge.index()) >= 53
+    assert ".agents/rules/" in knowledge.digest("board")

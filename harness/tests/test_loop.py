@@ -36,6 +36,8 @@ def _adapter(behaviour):
                 raise UnexpectedModelBehavior(
                     f"Model token limit ({budget}) exceeded before any response was generated."
                 )
+            if step == "raise-connection":
+                raise ConnectionError("Connection error.")
             if step == "raise-other":
                 raise UnexpectedModelBehavior("something unrelated went wrong")
             yield {"type": "ok"}
@@ -59,6 +61,14 @@ async def test_token_limit_retry_is_capped():
         async for _ in stream_with_token_retry(make_stream, initial_budget=32000, max_budget=64000):
             pass
     assert seen == [32000, 64000], f"should stop once at the cap, not keep retrying: {seen}"
+
+
+async def test_connection_errors_are_retried():
+    """A provider that drops the socket once must not end the run (seen twice on pi-relay)."""
+    make_stream, seen = _adapter(["raise-connection", "yield"])
+    events = [e async for e in stream_with_token_retry(make_stream, initial_budget=32000)]
+    assert events == [{"type": "ok"}]
+    assert len(seen) == 2
 
 
 async def test_unrelated_model_errors_are_not_retried():

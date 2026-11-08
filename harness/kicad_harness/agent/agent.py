@@ -9,6 +9,7 @@ See DESIGN.md, "Agent".
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import dataclasses
 import json
@@ -766,8 +767,12 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             )
         from . import tool_catalog
 
-        lines.append("")
-        lines.append(tool_catalog.phase_instructions(phase))
+        # Workflow + rules digest is large (~1-2k tokens). Send it once per phase per run; the
+        # model keeps the conversation, and re-sending it every step only burns context.
+        if st.playbook_phase != phase:
+            lines.append("")
+            lines.append(tool_catalog.phase_instructions(phase))
+            st.playbook_phase = phase
         if st.supervised:
             lines.append("Supervised mode is ON: destructive tools pause for the user's approval.")
         if st.selection:
@@ -780,14 +785,18 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool
     async def read_reference(
-        ctx: RunContext[HarnessDeps], topic: str, section: str | None = None
+        ctx: RunContext[HarnessDeps], topic: str | None = None, section: str | None = None,
+        query: str | None = None,
     ) -> ToolReturn:
-        """Read the harness's PCB design rule or reference for a topic (e.g. "pcb-routing",
-        "placement", "copper-pours", "dfm"). These are the documents the workflow guidance is
-        summarised from; open one when a decision is not obvious. Pass `section` to get only
-        that heading."""
+        """Read the harness's PCB rule/reference for a topic (e.g. "pcb-routing", "dfm"), or
+        search all 53 documents with `query`. Pass `section` to get only one heading."""
         from kicad_harness.agent import knowledge
 
+        if query and not topic:
+            return ToolReturn(return_value={"ok": True, "query": query,
+                                            "matches": knowledge.search(query)})
+        if not topic:
+            return ToolReturn(return_value={"ok": False, "error": "give a topic or a query"})
         doc = knowledge.read(topic)
         if doc is None:
             return ToolReturn(return_value={
@@ -931,6 +940,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 doc = await asyncio.to_thread(_schematic, ctx)
                 layout_report = await asyncio.to_thread(layout_mod.analyze, doc)
                 layout_report["findings"] = await asyncio.to_thread(layout_mod.findings, doc)
+                layout_report["metrics"] = await asyncio.to_thread(layout_mod.metrics, doc)
             except Exception as exc:
                 layout_report = {"ok": False, "score": None, "error": _engine_error_text(exc)}
             evaluation = await _evaluate(ctx)
@@ -956,6 +966,12 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         board_hash, _ = await _working(ctx)
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
         evaluation = await _evaluate(ctx)
+        from kicad_harness.engine import design_rules, manufacturing
+
+        index = await asyncio.to_thread(svc.artifacts.index, board_hash)
+        rules = await asyncio.to_thread(design_rules.load, ws)
+        rule_violations = await asyncio.to_thread(design_rules.violations, index, rules)
+        mfg = await asyncio.to_thread(manufacturing.status, ws)
 
         def brief(v: dict) -> dict:
             return {
@@ -969,6 +985,16 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 ],
             }
 
+        schematic_report = None
+        if ws.schematic_path.is_file():
+            from kicad_harness.engine import layout as layout_mod
+            try:
+                sdoc = await asyncio.to_thread(_schematic, ctx)
+                schematic_report = await asyncio.to_thread(layout_mod.analyze, sdoc)
+                schematic_report["findings"] = await asyncio.to_thread(layout_mod.findings, sdoc)
+                schematic_report["metrics"] = await asyncio.to_thread(layout_mod.metrics, sdoc)
+            except Exception:
+                schematic_report = None
         result = {
             "phase": "board",
             "drc_counts": drc.get("counts", {}),
@@ -976,6 +1002,14 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             "unconnected": [brief(v) for v in drc.get("unconnected", [])[:20]],
             "goal_met": evaluation["met"],
             "criteria": evaluation["criteria"],
+            "rules": {
+                "netclasses": rules.get("netclasses"),
+                "stackup": rules.get("stackup"),
+                "count": len(rule_violations),
+                "violations": rule_violations[:20],
+            },
+            "manufacturing": mfg,
+            "schematic": schematic_report,
         }
         try:
             spec = {"mode": "2d", "side": "front"}
@@ -1187,9 +1221,16 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool(sequential=True)
     async def add_track(
-        ctx: RunContext[HarnessDeps], net: str, points: list[list[float]], width: float = 0.25, layer: str = "F.Cu"
+        ctx: RunContext[HarnessDeps], net: str, points: list[list[float]],
+        width: float | None = None, layer: str = "F.Cu"
     ) -> ToolReturn:
-        """Draw a track through `points` [[x, y], ...] on `layer` (F.Cu or B.Cu). Prefer 45-degree bends."""
+        """Draw a track through `points` [[x, y], ...] on `layer` (F.Cu or B.Cu). Prefer
+        45-degree bends. Omit `width` to use the net's declared class width."""
+        if width is None:
+            from kicad_harness.engine import design_rules
+            rules = design_rules.load(_ws(ctx))
+            _name, spec = design_rules.class_for(rules, net)
+            width = float(spec.get("width") or 0.25)
         return await _edit(
             ctx, "add_track", f"Route {net} on {layer} ({len(points) - 1} segment(s))",
             lambda b: engine(ctx).call("add_track", board=b, net=net, points=points, width=width, layer=layer),
@@ -1218,11 +1259,140 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
-    async def set_board_outline(
-        ctx: RunContext[HarnessDeps], width: float, height: float, x: float = 0.0, y: float = 0.0,
-        corner_radius: float = 0.0,
+    async def place_silkscreen(ctx: RunContext[HarnessDeps]) -> ToolReturn:
+        """Move every reference designator to a free spot beside its footprint, avoiding parts and
+        other text. Use after placement/routing; DRC does not check text collisions."""
+        board_hash, index = await _working(ctx)
+        footprints = sorted(index.get("footprints", []), key=lambda fp: fp.get("ref", ""))
+
+        def work(board) -> dict:
+            eng = engine(ctx)
+            occupied = [tuple(fp["bbox"]) for fp in footprints]
+            placed = 0
+            for fp in footprints:
+                x, y, w, h = fp["bbox"]
+                text = str(fp.get("ref") or "")
+                width = max(2.0, 1.15 * len(text))
+                candidates = [
+                    (x + w / 2 - width / 2, y - 1.4),        # above
+                    (x + w / 2 - width / 2, y + h + 1.4),    # below
+                    (x + w + 1.2, y + h / 2),                # right
+                    (x - width - 1.2, y + h / 2),            # left
+                ]
+                for cx, cy in candidates:
+                    box = (cx, cy - 1.0, cx + width, cy + 1.0)
+                    if any(_boxes_overlap(box, other) for other in occupied):
+                        continue
+                    eng.call("move_reference_text", board=board, ref=fp["ref"], x=cx, y=cy)
+                    occupied.append(box)
+                    placed += 1
+                    break
+            return {"placed": placed, "footprints": len(footprints)}
+
+        return await _edit(ctx, "place_silkscreen", "Place silkscreen references", work)
+
+    @agent.tool(sequential=True)
+    async def add_thermal_vias(
+        ctx: RunContext[HarnessDeps], ref: str, pad: str | None = None,
+        count: int = 4, radius: float = 1.5,
     ) -> ToolReturn:
-        """Replace the board outline with a width x height rectangle at (x, y), optionally with rounded corners."""
+        """Ring `count` vias around a power-pad (default: the largest pad of `ref`) to spread heat
+        into the plane. The vias take the pad's net."""
+        board_hash, index = await _working(ctx)
+        pads = [p for p in index.get("pads", [])
+                if p.get("ref") == ref and (pad is None or str(p.get("pad")) == str(pad))]
+        if not pads:
+            return ToolReturn(return_value={"ok": False, "error": f"no matching pad on {ref}"})
+        target = max(pads, key=lambda p: float(p.get("w", 0)) * float(p.get("h", 0)))
+        net = target.get("net") or ""
+        if not net:
+            return ToolReturn(return_value={"ok": False, "error": "the pad has no net"})
+
+        def work(board) -> dict:
+            eng = engine(ctx)
+            for i in range(max(1, count)):
+                angle = 2 * math.pi * i / max(1, count)
+                eng.call("add_via", board=board,
+                         x=float(target["x"]) + radius * math.cos(angle),
+                         y=float(target["y"]) + radius * math.sin(angle), net=net)
+            return {"vias": max(1, count), "pad": target.get("pad"), "net": net}
+
+        return await _edit(ctx, "add_thermal_vias", f"Thermal vias under {ref}", work)
+
+    @agent.tool(sequential=True)
+    async def route_diff_pair(
+        ctx: RunContext[HarnessDeps], net_p: str, net_n: str, points: list[list[float]],
+        spacing: float = 0.2, width: float | None = None, layer: str = "F.Cu",
+    ) -> ToolReturn:
+        """Route a differential pair through `points`: two parallel tracks offset by `spacing`."""
+        if len(points) < 2:
+            return ToolReturn(return_value={"ok": False, "error": "a pair needs two points"})
+        if width is None:
+            from kicad_harness.engine import design_rules
+            rules = design_rules.load(_ws(ctx))
+            _name, spec = design_rules.class_for(rules, net_p)
+            width = float(spec.get("width") or 0.2)
+        (x0, y0), (x1, y1) = points[0], points[1]
+        length = math.dist((x0, y0), (x1, y1)) or 1.0
+        nx, ny = -(y1 - y0) / length, (x1 - x0) / length
+        offset = spacing / 2
+        positive = [[x + nx * offset, y + ny * offset] for x, y in points]
+        negative = [[x - nx * offset, y - ny * offset] for x, y in points]
+
+        def work(board) -> dict:
+            eng = engine(ctx)
+            first = eng.call("add_track", board=board, net=net_p, points=positive,
+                             width=width, layer=layer)
+            second = eng.call("add_track", board=board, net=net_n, points=negative,
+                              width=width, layer=layer)
+            return {"net_p": net_p, "net_n": net_n, "width": width, "spacing": spacing,
+                    "segments": len(first.get("uuids", [])) + len(second.get("uuids", []))}
+
+        return await _edit(ctx, "route_diff_pair", f"Route pair {net_p}/{net_n}", work)
+
+    @agent.tool
+    async def match_length(ctx: RunContext[HarnessDeps], nets: list[str],
+                           tolerance_mm: float = 1.0) -> ToolReturn:
+        """Report the routed length of each net and whether they match within `tolerance_mm`."""
+        board_hash, index = await _working(ctx)
+        lengths: dict[str, float] = {}
+        for net in nets:
+            total = 0.0
+            for track in index.get("tracks", []):
+                if track.get("net") != net:
+                    continue
+                total += math.dist((track["x1"], track["y1"]), (track["x2"], track["y2"]))
+            lengths[net] = round(total, 2)
+        values = list(lengths.values())
+        delta = round(max(values) - min(values), 2) if values else 0.0
+        return ToolReturn(return_value={
+            "lengths_mm": lengths,
+            "delta_mm": delta,
+            "tolerance_mm": tolerance_mm,
+            "matched": bool(values) and delta <= tolerance_mm,
+        })
+
+    def _boxes_overlap(a, b) -> bool:
+        return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+    @agent.tool(sequential=True)
+    async def set_board_outline(
+        ctx: RunContext[HarnessDeps], width: float | None = None, height: float | None = None,
+        x: float = 0.0, y: float = 0.0, corner_radius: float = 0.0,
+        points: list[list[float]] | None = None,
+    ) -> ToolReturn:
+        """Set the board outline: a `width` x `height` rectangle at (x, y), optionally rounded,
+        or an imported polygon through `points` [[x,y], ...] from the mechanical drawing."""
+        if points:
+            if len(points) < 3:
+                return ToolReturn(return_value={"ok": False, "error": "a polygon needs 3+ points"})
+            return await _edit(
+                ctx, "set_board_outline", f"Set board outline to a {len(points)}-point polygon",
+                lambda b: engine(ctx).call("set_outline_polygon", board=b, points=points),
+                risky=True,
+            )
+        if width is None or height is None:
+            return ToolReturn(return_value={"ok": False, "error": "give width and height, or points"})
         return await _edit(
             ctx, "set_board_outline", f"Set board outline to {width:g} x {height:g} mm",
             lambda b: engine(ctx).call(
@@ -1230,6 +1400,62 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             ),
             risky=True,
         )
+
+    @agent.tool
+    async def set_net_class(
+        ctx: RunContext[HarnessDeps],
+        name: str,
+        nets: list[str],
+        width: float = 0.25,
+        clearance: float = 0.2,
+        impedance: float | None = None,
+    ) -> ToolReturn:
+        """Declare a net class (e.g. name="POWER", nets=["+5V","GND"], width=0.8).
+
+        New tracks on those nets default to this width, `check` reports any narrower track, and
+        the impedance target is recorded for high-speed nets. Net patterns may use `*`."""
+        from kicad_harness.engine import design_rules
+
+        ws = _ws(ctx)
+        rules = await asyncio.to_thread(design_rules.load, ws)
+        rules["netclasses"][name] = {"nets": nets, "width": width, "clearance": clearance,
+                                     "impedance": impedance, "explicit": True}
+        await asyncio.to_thread(design_rules.save, ws, rules)
+        return ToolReturn(return_value={"ok": True, "class": name, "nets": nets, "width": width,
+                                        "clearance": clearance, "impedance": impedance})
+
+    @agent.tool
+    async def set_stackup(
+        ctx: RunContext[HarnessDeps], layers: int, material: str = "FR4",
+        thickness: float = 1.6, impedance: dict | None = None,
+    ) -> ToolReturn:
+        """Declare the stackup (copper layers, material, thickness, optional impedance map).
+
+        `check` compares the declared copper count with the board and reports a mismatch."""
+        from kicad_harness.engine import design_rules
+
+        ws = _ws(ctx)
+        rules = await asyncio.to_thread(design_rules.load, ws)
+        rules["stackup"] = {"layers": layers, "material": material, "thickness": thickness,
+                            "impedance": impedance or {}}
+        await asyncio.to_thread(design_rules.save, ws, rules)
+        return ToolReturn(return_value={"ok": True, **rules["stackup"]})
+
+    @agent.tool(sequential=True)
+    async def export_manufacturing(ctx: RunContext[HarnessDeps]) -> ToolReturn:
+        """Write the orderable package: Gerbers for the production layers, Excellon drill,
+        pick-and-place CSV, BOM CSV and a manifest with the board hash. Files go to
+        `<design>/manufacturing`; `check` reports whether the package is present and current."""
+        from kicad_harness.engine import manufacturing
+
+        ws = _ws(ctx)
+        if not ws.board_path.is_file():
+            return ToolReturn(return_value={"ok": False, "error": "this design has no board yet"})
+        try:
+            manifest = await asyncio.to_thread(manufacturing.export, ws, ctx.deps.services.config)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        return ToolReturn(return_value={"ok": True, **manifest})
 
     @agent.tool(sequential=True)
     async def add_copper_zone(
@@ -1288,6 +1514,61 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return await _edit(ctx, "add_footprint", f"Add {ref} ({footprint}) at ({x:g}, {y:g})", work)
 
     # ------------------------------------------------------------------ history
+
+    @agent.tool
+    async def diff_versions(ctx: RunContext[HarnessDeps], a: str, b: str = "working",
+                            scope: str = "nets") -> ToolReturn:
+        """Compare the schematic netlist (`scope="nets"`) or the BOM (`scope="bom"`) between two
+        revisions (a sha prefix or "working"). Returns added/removed nets and pin changes, so a
+        silent connectivity drift is visible before it reaches the board."""
+        import os
+        import tempfile
+
+        from kicad_harness.engine.schematic import Schematic
+
+        ws = _ws(ctx)
+
+        def load(rev: str):
+            if rev in ("working", "WORKING"):
+                return Schematic.load(ws.schematic_path)
+            data = ws.file_at(rev, "schematic.kicad_sch")
+            with tempfile.NamedTemporaryFile(suffix=".kicad_sch", delete=False) as handle:
+                handle.write(data)
+                name = handle.name
+            try:
+                return Schematic.load(name)
+            finally:
+                os.unlink(name)
+
+        try:
+            left, right = await asyncio.to_thread(load, a), await asyncio.to_thread(load, b)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        if scope == "bom":
+            def bom(doc):
+                return {p.reference: [p.value, p.footprint, (p.properties or {}).get("LCSC", "")]
+                        for p in doc.placements() if not p.reference.startswith("#")}
+            old, new = bom(left), bom(right)
+            changed = {ref: {"before": old[ref], "after": new[ref]}
+                       for ref in old.keys() & new.keys() if old[ref] != new[ref]}
+            return ToolReturn(return_value={
+                "ok": True, "scope": "bom",
+                "added": sorted(new.keys() - old.keys()),
+                "removed": sorted(old.keys() - new.keys()),
+                "changed": changed,
+            })
+        def nets(doc):
+            return {name: sorted((m["ref"], m["pin"]) for m in members)
+                    for name, members in doc.nets().items()}
+        old, new = nets(left), nets(right)
+        changed = {name: {"before": old[name], "after": new[name]}
+                   for name in old.keys() & new.keys() if old[name] != new[name]}
+        return ToolReturn(return_value={
+            "ok": True, "scope": "nets",
+            "added": sorted(new.keys() - old.keys()),
+            "removed": sorted(old.keys() - new.keys()),
+            "changed": changed,
+        })
 
     @agent.tool
     async def list_versions(ctx: RunContext[HarnessDeps], limit: int = 20) -> dict:
@@ -1762,6 +2043,24 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         result["ok"] = True
         return ToolReturn(return_value=result)
+
+    @agent.tool
+    async def set_bom_alternates(ctx: RunContext[HarnessDeps], ref: str,
+                                 lcscs: list[str]) -> ToolReturn:
+        """Record second-source LCSC codes for a part; they are written into the manufacturing BOM."""
+        import json
+
+        ws = _ws(ctx)
+        path = ws.path / "bom_alternates.json"
+        data = {}
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                data = {}
+        data[ref] = sorted({code.strip().upper() for code in lcscs if code.strip()})
+        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return ToolReturn(return_value={"ok": True, "ref": ref, "alternates": data[ref]})
 
     @agent.tool
     async def read_part_datasheet(

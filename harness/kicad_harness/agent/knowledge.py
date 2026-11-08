@@ -145,6 +145,30 @@ def index() -> list[dict[str, Any]]:
     return out
 
 
+def search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Find a phrase across all bundled documents; returns one hit per document."""
+    needle = (query or "").strip().lower()
+    if not needle:
+        return []
+    hits: list[dict[str, Any]] = []
+    for item in index():
+        doc = read(item["id"])
+        if doc is None:
+            continue
+        for line in doc["text"].splitlines():
+            if needle in line.lower():
+                hits.append({
+                    "topic": doc["id"],
+                    "title": doc["title"],
+                    "source": doc["source"],
+                    "line": line.strip()[:200],
+                })
+                break
+        if len(hits) >= limit:
+            break
+    return hits
+
+
 def topic_ids() -> list[str]:
     return [item["id"] for item in index()]
 

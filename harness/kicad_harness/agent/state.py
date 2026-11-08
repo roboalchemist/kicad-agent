@@ -52,6 +52,7 @@ class DesignState(BaseModel):
     board_hash: str | None = None
     goal: GoalStatus | None = None
     last_render: RenderInfo | None = None
+    playbook_phase: str | None = None
     highlight: Highlight | None = None
     selection: dict[str, Any] | None = None
     viewing: str | None = None
