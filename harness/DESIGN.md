@@ -613,3 +613,8 @@ These texts are not just documentation; they are applied to every run:
 - `engine/heights.py` stores per-part heights and the enclosure, and reports over-height and
   unmeasured parts; `engine/si.py` estimates through-via stubs against
   `pcb-high-speed#Via Stubs & Back-Drilling`.
+- `render.schematic_view` crops/annotates a schematic in sheet mm; `render.render_2d` accepts a
+  `region`, pad numbers and a scale bar. `inspect` wraps both with a view box and mm/px.
+- `engine/geometry.clearance_query`/`probe` and `engine/qa.py` (silkscreen, courtyard, board
+  diff) are the measurement layer. They use the pick index, not pixels, and cite the rule in
+  every finding; `diff_versions(scope="board")` returns two aligned images.

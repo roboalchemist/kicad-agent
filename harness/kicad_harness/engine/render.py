@@ -8,6 +8,7 @@ viewBox, draws highlights, labels and pins from the pick index, and rasterizes w
 from __future__ import annotations
 
 import io
+import math
 import os
 import re
 import tempfile
@@ -88,8 +89,15 @@ def _fmt(v: float) -> str:
     return f"{v:.4f}".rstrip("0").rstrip(".") or "0"
 
 
-def _crop(index: dict[str, Any], center: Sequence[float] | None, view_mm: float | None) -> tuple[float, float, float, float]:
+def _crop(index: dict[str, Any], center: Sequence[float] | None, view_mm: float | None,
+          region: Sequence[float] | None = None) -> tuple[float, float, float, float]:
     ex, ey, ew, eh = index["board"]["edge_bbox"]
+    if region is not None:
+        x1, y1, x2, y2 = (float(v) for v in region)
+        w, h = abs(x2 - x1), abs(y2 - y1)
+        if w <= 0 or h <= 0:
+            raise EngineError("InvalidParams", f"region must be a non-empty box, got {list(region)}")
+        return min(x1, x2), min(y1, y2), w, h
     if center is None and view_mm is None:
         margin = max(0.5, 0.03 * max(ew, eh))
         return ex - margin, ey - margin, ew + 2 * margin, eh + 2 * margin
@@ -185,24 +193,27 @@ def _highlight(ov: _Overlay, index: dict[str, Any], entities: list[dict[str, Any
 
 
 def render_2d(board_svg: str, index: dict[str, Any], *, center: Sequence[float] | None = None,
-              view_mm: float | None = None, px_per_mm: float | None = None, width_px: int = 1200,
-              highlight: Iterable[Any] = (), labels: bool = True, pins: Iterable[dict[str, Any]] = (),
+              view_mm: float | None = None, region: Sequence[float] | None = None,
+              px_per_mm: float | None = None, width_px: int = 1200,
+              highlight: Iterable[Any] = (), labels: bool = True, pad_labels: bool = False,
+              pins: Iterable[dict[str, Any]] = (), scale_bar: bool = False,
               side: str = "front") -> bytes:
     """Rasterize a crop of a board-area SVG to PNG bytes.
 
-    - Crop: with neither ``center`` nor ``view_mm``, the whole board plus a small margin; else a
-      square ``view_mm`` wide around ``center`` (default: board centre; default ``view_mm``: the
-      board's larger side).
+    - Crop: ``region`` [x1,y1,x2,y2] wins; with neither ``center`` nor ``view_mm``, the whole
+      board plus a small margin; else a square ``view_mm`` wide around ``center``.
     - Size: ``px_per_mm`` if given, else ``width_px`` across (capped at 6000 px a side).
     - ``highlight``: specs for ``geometry.resolve`` (``U1``, ``U1.3``, ``net:GND``, UUIDs) or
       entity dicts; outlined in cyan, with net names on highlighted pads.
     - ``labels``: refdes at each footprint (dimmed for parts on the other side).
+    - ``pad_labels``: pad numbers at their centres (for close-up inspection).
+    - ``scale_bar``: a labelled mm bar in the lower-left corner.
     - ``pins``: ``{x, y, label}`` markers, e.g. review-thread numbers.
     - ``side``: ``front``, or ``back`` for the mirrored back SVG.
     """
     side = _side(side)
     frame = svg_frame(board_svg, index, side)
-    x0, y0, w, h = _crop(index, center, view_mm)
+    x0, y0, w, h = _crop(index, center, view_mm, region)
     if px_per_mm is not None:
         if px_per_mm <= 0:
             raise EngineError("InvalidParams", f"px_per_mm must be > 0, got {px_per_mm}")
@@ -223,6 +234,16 @@ def render_2d(board_svg: str, index: dict[str, Any], *, center: Sequence[float] 
     label_px = max(11.0, min(20.0, out_w / 55.0))
     entities = geometry.entities_in(index, highlight)
     _highlight(ov, index, entities, label_px)
+    if pad_labels:
+        for pad in index.get("pads", []):
+            if x0 <= float(pad["x"]) <= x0 + w and y0 <= float(pad["y"]) <= y0 + h:
+                # Offset to the pad's upper-right corner so it does not sit under the net name
+                # that `_highlight` draws along the pad's long axis.
+                ov.text(float(pad["x"]) + 0.32 * float(pad.get("w") or 0),
+                        float(pad["y"]) - 0.32 * float(pad.get("h") or 0),
+                        str(pad["pad"]), size_px=label_px * 0.7, color=PIN)
+    if scale_bar:
+        _scale_bar(ov, x0, y0, w, h, px_mm)
     if labels:
         for fp in index.get("footprints", []):
             bx, by, bw, bh = fp["bbox"]
@@ -278,6 +299,86 @@ def frame_3d(index: dict[str, Any], *, center: Sequence[float] | None = None, vi
     zoom = px_per_mm * CAMERA_K * maxdim / req_h
     return {"zoom": zoom, "pivot": ((x - cx) / 10.0, (cy - y) / 10.0, 0.0), "px_per_mm": px_per_mm,
             "view_mm": view, "center": [x, y]}
+
+
+def _scale_bar(ov: _Overlay, x0: float, y0: float, w: float, h: float, px_mm: float) -> None:
+    """A round-number mm bar in the lower-left of the crop, with its label."""
+    target = w / 6.0
+    exponent = math.floor(math.log10(target)) if target > 0 else 0
+    length = min((1, 2, 5, 10), key=lambda m: abs(m * 10 ** exponent - target)) * 10 ** exponent
+    if length <= 0:
+        return
+    x, y = x0 + 0.04 * w, y0 + h - 0.06 * h
+    pad = 5 * ov.px
+    ov.polygon([[x - pad, y - 8 * ov.px], [x + length + pad, y - 8 * ov.px],
+                [x + length + pad, y + 3 * ov.px], [x - pad, y + 3 * ov.px]],
+               stroke="none", fill=BACKGROUND, fill_opacity=0.72)
+    ov.polygon([[x, y], [x + length, y]], stroke=LABEL, width_px=4)
+    ov.polygon([[x, y - 1.2 / px_mm], [x, y + 1.2 / px_mm]], stroke=LABEL, width_px=3)
+    ov.polygon([[x + length, y - 1.2 / px_mm], [x + length, y + 1.2 / px_mm]], stroke=LABEL, width_px=3)
+    ov.text(x + length / 2, y - 2.4 / px_mm, f"{length:g} mm", size_px=13, color=LABEL)
+
+
+def schematic_view(schematic: str | os.PathLike[str], *, region: Sequence[float] | None = None,
+                   center: Sequence[float] | None = None, view_mm: float | None = None,
+                   width: int = 1800, highlight: Iterable[Sequence[float]] = (),
+                   scale_bar: bool = True) -> tuple[bytes, dict[str, Any]]:
+    """Crop and annotate a schematic sheet; returns ``(png_bytes, view)``.
+
+    ``region`` is ``[x1, y1, x2, y2]`` in sheet millimetres. ``highlight`` boxes are drawn in the
+    same coordinates, so the caller can outline a symbol or a net without reading pixels.
+    """
+    import cairosvg
+
+    with tempfile.TemporaryDirectory(prefix="harness-sch-view-") as tmp:
+        svg = kicad_cli.export_sch_svg(schematic, tmp)[0]
+        text = svg.read_text(encoding="utf-8")
+    tag = _SVG_TAG.search(text)
+    vb = _VIEWBOX.search(tag.group(0)) if tag else None
+    if not vb:
+        raise EngineError("RenderFailed", "the schematic SVG has no viewBox")
+    px, py, pw, ph = (float(v) for v in vb.group(1).replace(",", " ").split())
+    if region is not None:
+        x1, y1, x2, y2 = (float(v) for v in region)
+        cx0, cy0, cw, ch = min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1)
+    elif center is not None or view_mm is not None:
+        cw = ch = float(view_mm or min(pw, ph))
+        cx, cy = (float(center[0]), float(center[1])) if center else (px + pw / 2, py + ph / 2)
+        cx0, cy0 = cx - cw / 2, cy - ch / 2
+    else:
+        cx0, cy0, cw, ch = px, py, pw, ph
+    if cw <= 0 or ch <= 0:
+        raise EngineError("InvalidParams", "schematic view region is empty")
+    out_w = max(64, min(int(width), MAX_PX))
+    out_h = max(1, round(out_w * ch / cw))
+    stroke = 2.5 * cw / out_w
+    font = max(10.0, out_w / 120.0) * cw / out_w
+    parts: list[str] = []
+    for raw in highlight:
+        if len(raw) < 4:
+            continue
+        x1, y1, x2, y2 = (float(v) for v in raw[:4])
+        parts.append(f'<rect x="{_fmt(x1)}" y="{_fmt(y1)}" width="{_fmt(abs(x2 - x1))}" '
+                     f'height="{_fmt(abs(y2 - y1))}" fill="none" stroke="{HIGHLIGHT}" '
+                     f'stroke-width="{_fmt(stroke)}" stroke-dasharray="{_fmt(6 * stroke)},{_fmt(4 * stroke)}"/>')
+    if scale_bar:
+        target = cw / 6.0
+        exponent = math.floor(math.log10(target)) if target > 0 else 0
+        length = min((1, 2, 5, 10), key=lambda m: abs(m * 10 ** exponent - target)) * 10 ** exponent
+        bx, by = cx0 + 0.04 * cw, cy0 + ch - 0.06 * ch
+        parts.append(f'<line x1="{_fmt(bx)}" y1="{_fmt(by)}" x2="{_fmt(bx + length)}" y2="{_fmt(by)}" '
+                     f'stroke="#000000" stroke-width="{_fmt(4 * cw / out_w)}"/>')
+        parts.append(f'<text x="{_fmt(bx + length / 2)}" y="{_fmt(by - 2.4 * cw / out_w)}" '
+                     f'font-family="{FONT}" font-size="{_fmt(font)}" fill="#000000" '
+                     f'text-anchor="middle">{length:g} mm</text>')
+    opening = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(cw)}mm" height="{_fmt(ch)}mm" '
+               f'viewBox="{_fmt(cx0)} {_fmt(cy0)} {_fmt(cw)} {_fmt(ch)}">')
+    text = _SVG_TAG.sub(opening, text, count=1)
+    text = text.replace("</svg>", '<g id="harness-overlay">' + "".join(parts) + "</g></svg>")
+    png = cairosvg.svg2png(bytestring=text.encode("utf-8"), output_width=out_w,
+                           output_height=out_h, background_color="#FFFFFF")
+    return png, {"x0": round(cx0, 3), "y0": round(cy0, 3), "w": round(cw, 3),
+                 "h": round(ch, 3), "px_per_mm": round(out_w / cw, 4)}
 
 
 def render_3d_view(board: str | os.PathLike[str], index: dict[str, Any], *, center: Sequence[float] | None = None,

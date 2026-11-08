@@ -47,12 +47,17 @@ TOOLS: dict[str, tuple[str, str]] = {
     "route_schematic": ("schematic", "Draw direct wires for point-to-point nets, ERC-checked and reversible."),
     "start_board": ("schematic", "Only after ERC 0 and legible 0: create the board from the netlist."),
     # -- board ----------------------------------------------------------------------------
+    "inspect": ("global", "Close-up, annotated, calibrated view; returns the view box and mm/px for probe/measure."),
     "set_board_outline": ("board", "Set the mechanical outline first; everything else depends on it."),
     "set_component_height": ("board", "Record a part height from its datasheet so the enclosure fit can be checked."),
     "set_enclosure": ("board", "Declare the enclosure height and PCB-to-lid clearance; check reports over-height and unmeasured parts."),
     "set_net_class": ("board", "Declare width/clearance/impedance per net group; new tracks use it and check flags narrower ones."),
     "set_stackup": ("board", "Declare copper layers, material, er/height and impedance; check compares it with the board."),
     "add_keepout": ("board", "Rule-area keepout: no tracks/vias/pours inside the polygon."),
+    "measure_clearance": ("board", "Nearest copper clearance for nets/entities/a region, with an optional rule limit."),
+    "probe": ("board", "What is at a board point: pads, tracks, vias, zones, footprint and silk text."),
+    "silkscreen_check": ("board", "Text over pads/vias/text, undersized text, and text in the edge band."),
+    "courtyard_check": ("board", "Overlapping footprint courtyards and parts with no courtyard."),
     "add_cutout": ("board", "Cut a circular hole in the board outline."),
     "add_mounting_holes": ("board", "Add four corner mounting holes with copper keepouts."),
     "import_outline": ("board", "Set Edge.Cuts from an ASCII DXF LWPOLYLINE."),
@@ -167,7 +172,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Review the picture",
          "detail": "Look at the rendered sheet: rows out of sequence, colliding reference text and "
                    "marooned parts do not show up in the score.",
-         "tools": ["render", "check"],
+         "tools": ["inspect", "render", "check"],
          "gate": "no obvious visual fault", "ref": "pcb-silkscreen#Text Sizing"},
         {"step": "Hand over to layout",
          "detail": "Create the board from the finished netlist only when the schematic is correct, "
@@ -195,13 +200,13 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Place fixed parts first",
          "detail": "Connectors, mounting holes and test points are anchors; they define the routing "
                    "topology.",
-         "tools": ["move_footprint", "rotate_footprint", "flip_footprint"],
+         "tools": ["move_footprint", "rotate_footprint", "flip_footprint", "courtyard_check", "inspect"],
          "gate": "every fixed part within 0.1 mm of its mechanical position",
          "ref": "pcb-placement#Priority Order"},
         {"step": "Critical ICs & decoupling",
          "detail": "ICs next, decoupling capacitors within 3-5 mm of their power pins, timing parts "
                    "adjacent to their IC.",
-         "tools": ["move_footprint", "rotate_footprint", "measure"],
+         "tools": ["move_footprint", "rotate_footprint", "measure", "measure_clearance", "inspect"],
          "gate": "decoupling and timing parts at their IC",
          "ref": "pcb-placement#Priority Order"},
         {"step": "Group, orient, plan silkscreen",
@@ -217,7 +222,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Route critical, then general",
          "detail": "Clocks and differential pairs before standard signals; 45-degree bends, 3W "
                    "spacing, continuous return paths, minimal vias.",
-         "tools": ["autoroute", "add_track", "add_via", "delete_board_items"],
+         "tools": ["autoroute", "add_track", "add_via", "delete_board_items", "measure_clearance"],
          "gate": "unconnected 0", "ref": "pcb-routing#Signal Integrity"},
         {"step": "Pours, stitching & thermal",
          "detail": "Refill after the last move; thermal relief on pads, stitching vias, no floating "
@@ -228,7 +233,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Verify like a reviewer",
          "detail": "DRC zero, netlist compare, edge/mechanical clearance, silkscreen legibility, DFM "
                    "for the assembler.",
-         "tools": ["check", "measure", "render"],
+         "tools": ["check", "measure", "measure_clearance", "silkscreen_check", "courtyard_check", "probe", "inspect"],
          "gate": "DRC 0, unconnected 0, size/edge criteria pass",
          "ref": "pcb-design-process#Phase Details"},
         {"step": "Manufacturing files & handoff",

@@ -1,6 +1,6 @@
 # Tool review — against the full PCB knowledge base
 
-Scope: the 50 agent tools exposed at `GET /api/settings` (8 global, 4 BOM, 18 schematic,
+Scope: the 59 agent tools exposed at `GET /api/settings` (8 global, 4 BOM, 18 schematic,
 20 board) and the 53 bundled rule/reference documents (229 sections) in
 `kicad_harness/knowledge/`. The question is not "does each tool work" but "is the toolset the
 right shape for the work the rules describe".
@@ -98,7 +98,24 @@ back (manufacturing/test) are largely absent.
 - `check_schematic`: its name promises ERC detail but it returns only goal criteria.
 - `autoroute`: ignores net classes/impedance because there are none; not constraint-aware.
 
-## 5. Recommended target toolset (≈36 tools)
+## 5. Visual inspection and measurement
+
+The model gets four layers, each with a different job:
+
+| Tool | Job | What it returns |
+|---|---|---|
+| `inspect` | the camera | close-up board/schematic crop, annotations (refs/pads/scale), view box + mm/px |
+| `measure_clearance` | the caliper | nearest copper for nets/entities/region, layer, optional rule pass/fail |
+| `probe` | the crosshair | what is at an mm point: pad/track/via/zone, footprint, silk text |
+| `silkscreen_check`, `courtyard_check` | the reviewer | text-over-pad/via/text, undersized/edge text; courtyard overlaps and missing courtyards |
+| `diff_versions(scope="board")` | the comparator | added/removed/changed geometry plus two aligned images (new highlights, old highlights) |
+
+`measure` stays the scalar primitive; `measure_clearance` is the selector/batch layer. The checks
+are geometry over the pick index (no OCR, no pixel scoring), so every finding names the entity and
+the rule (`pcb-silkscreen#Placement Rules`, `pcb-placement#Spacing`). Renders are for what geometry
+cannot model (orientation, visual density, silk appearance); dimensions always come from the index.
+
+## 6. Recommended target toolset (≈36 tools)
 
 **Merge / cut (‑14)**: part_categories, check_part (as a flag), delete_items, label_pin +
 add_schematic_label (→ label_net), draw_schematic_wires, check_schematic (merged into check),
@@ -161,6 +178,7 @@ thermal), plus knowledge search.
 | Knowledge sync + search | **done** — drift test against `.agents/rules` plus `read_reference(query=...)`. |
 | Golden regression suite | **done** — bundled `tests/test_golden_flow.py` runs draw → tidy → route → board → track → manufacturing on a four-part design, plus test-point parity; no live workspace needed. |
 | UI tool examples / project management | **done** — examples and failure modes on the tool page; projects page rename, duplicate and confirm-gated delete. |
+| Visual inspection & measurement | **done** — `inspect` (cropped, annotated, calibrated board/schematic), `measure_clearance` (nets/entities/region + rule), `probe` (point hit-test), `silkscreen_check`, `courtyard_check`, and `diff_versions(scope="board")` with two aligned images. |
 
 ### Remaining documented limits
 

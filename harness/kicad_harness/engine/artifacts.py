@@ -4,7 +4,7 @@ Everything is keyed by the board hash, ``sha256(board bytes)[:16]``, so a commit
 identical working copy share one cache entry. Layout under ``config.cache``::
 
     <CACHE_FORMAT>/<hash>/board.kicad_pcb   materialized board
-    <hash>/index.json        pick index
+    <hash>/index-v2.json     pick index
     <hash>/front.svg         F.Cu, F.Mask, F.SilkS, Edge.Cuts
     <hash>/back.svg          B.Cu, B.Mask, B.SilkS, Edge.Cuts, mirrored
     <hash>/drc.json          normalized DRC
@@ -40,7 +40,12 @@ RENDER_URL = "/api/renders/"
 # Bump whenever the bytes of a cached artifact change for the same board (theme/plot changes).
 # Included in both cache paths so old entries are simply ignored.
 CACHE_FORMAT = "f2"
-SPEC_2D = {"mode", "side", "center", "view_mm", "px_per_mm", "width_px", "highlight", "labels", "pins"}
+# Bump when the index schema changes: cached indexes are keyed by board hash, so a new field
+# (via type, courtyard, ...) otherwise looks like a difference between two identical revisions.
+INDEX_VERSION = 2
+
+SPEC_2D = {"mode", "side", "center", "view_mm", "region", "px_per_mm", "width_px", "highlight",
+           "labels", "pad_labels", "pins", "scale_bar"}
 SPEC_3D = {"mode", "side", "center", "view_mm", "rotate", "quality", "width", "height"}
 
 
@@ -122,7 +127,8 @@ class Artifacts:
     def index(self, hash: str) -> dict[str, Any]:
         """Pick index of the board."""
         board = self.board_path(hash)
-        target = self._build(f"{hash}/index", board.parent / "index.json",
+        target = self._build(f"{hash}/index-v{INDEX_VERSION}",
+                             board.parent / f"index-v{INDEX_VERSION}.json",
                              lambda tmp: self._write_json(tmp, self.engine.index(board)))
         return json.loads(target.read_text(encoding="utf-8"))
 

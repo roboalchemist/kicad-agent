@@ -998,6 +998,45 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             raise ModelRetry(f"Could not measure {a!r} to {b!r}: {exc}") from exc
 
     @agent.tool
+    async def measure_clearance(
+        ctx: RunContext[HarnessDeps], a: str | None = None, b: str | None = None,
+        region: list[float] | None = None, layer: str | None = None,
+        rule_mm: float | None = None,
+    ) -> ToolReturn:
+        """Nearest copper clearance, rule-aware.
+
+        - two nets (`net:GND`, `net:+5V`, or bare names): layer-by-layer net-to-net clearance;
+        - two entities: edge-to-edge distance (same as `measure`);
+        - one net: its nearest copper on any other net;
+        - `region` only: the closest pair of different nets inside [x1,y1,x2,y2].
+
+        `rule_mm` turns the result into a pass/fail against a declared limit. Prefer this over
+        several one-off distances when checking spacing."""
+        from kicad_harness.engine import geometry
+
+        _, index = await _working(ctx)
+        try:
+            result = await asyncio.to_thread(geometry.clearance_query, index, a, b, region, layer)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        passed = None
+        if rule_mm is not None:
+            passed = float(result["distance"]) + 1e-9 >= float(rule_mm)
+        return ToolReturn(return_value={
+            "ok": True, **result, "rule_mm": rule_mm, "pass": passed,
+        })
+
+    @agent.tool
+    async def probe(ctx: RunContext[HarnessDeps], x: float, y: float) -> ToolReturn:
+        """What is at a board point (mm): copper hits (pad/track/via/zone), the footprint whose
+        bbox contains it, and its visible reference text. Use it to turn a spot in an image into
+        an entity you can query or edit."""
+        from kicad_harness.engine import geometry
+
+        _, index = await _working(ctx)
+        return ToolReturn(return_value={"ok": True, **geometry.probe(index, x, y)})
+
+    @agent.tool
     async def check(ctx: RunContext[HarnessDeps], detail: bool = False) -> ToolReturn:
         """Check the current phase and return an image of it.
 
@@ -1117,6 +1156,28 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             return ToolReturn(return_value=result, metadata=[_snapshot(ctx.deps.state)])
 
     @agent.tool
+    async def silkscreen_check(ctx: RunContext[HarnessDeps],
+                               region: list[float] | None = None) -> ToolReturn:
+        """Check reference text against pads, vias, other text, the minimum character height and
+        the board-edge band, citing `pcb-silkscreen#Placement Rules`."""
+        from kicad_harness.engine import qa
+
+        _, index = await _working(ctx)
+        return ToolReturn(return_value={"ok": True,
+                                        **await asyncio.to_thread(qa.silkscreen, index, region)})
+
+    @agent.tool
+    async def courtyard_check(ctx: RunContext[HarnessDeps],
+                              region: list[float] | None = None) -> ToolReturn:
+        """Report overlapping footprint courtyards (assembly/rework clearance) and footprints with
+        no courtyard, citing `pcb-placement#Spacing`."""
+        from kicad_harness.engine import qa
+
+        _, index = await _working(ctx)
+        return ToolReturn(return_value={"ok": True,
+                                        **await asyncio.to_thread(qa.courtyards, index, region)})
+
+    @agent.tool
     @guarded
     async def render(
         ctx: RunContext[HarnessDeps],
@@ -1200,6 +1261,123 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             return_value=[meta, BinaryContent(data=png, media_type="image/png")],
             metadata=[_snapshot(ctx.deps.state)],
         )
+
+    @agent.tool
+    @guarded
+    async def inspect(
+        ctx: RunContext[HarnessDeps], target: str | None = None,
+        region: list[float] | None = None, side: str = "front",
+        annotate: list[str] | None = None, width_px: int = 1400,
+    ) -> ToolReturn:
+        """A close-up, annotated, calibrated view of the board or schematic.
+
+        Args:
+            target: Zoom to an entity: U1, U1.3, net:GND, a UUID, or "x,y".
+            region: Explicit [x1, y1, x2, y2] crop in mm (wins over target).
+            side: front or back for a board view.
+            annotate: any of "refs" (reference designators), "pads" (pad numbers), "scale"
+                (mm scale bar). Default: all three on the board, refs on the schematic.
+            width_px: Image width (capped at 6000).
+
+        Returns the image plus the view box and mm-per-pixel, so image coordinates can be
+        converted back to mm and fed to `probe` or `measure_clearance`."""
+        from kicad_harness.engine import geometry, layout as layout_mod, render as render_mod
+
+        ws = _ws(ctx)
+        annotate = [item.lower() for item in (annotate or [])] or ["refs", "pads", "scale"]
+        if ws.phase() == "schematic" or not ws.board_path.is_file():
+            doc = await asyncio.to_thread(_schematic, ctx)
+            boxes = await asyncio.to_thread(layout_mod.symbol_boxes, doc)
+            highlight: list[list[float]] = []
+            if target:
+                if target.startswith("net:"):
+                    name = target[4:]
+                    refs = {m["ref"] for m in doc.nets().get(name, [])
+                            if not m["ref"].startswith("#")}
+                    chosen = [boxes[ref] for ref in refs if ref in boxes]
+                elif target in boxes:
+                    chosen = [boxes[target]]
+                else:
+                    raise ModelRetry(f"Unknown schematic target {target!r}: use a ref, net:NAME or x,y")
+                if not chosen:
+                    raise ModelRetry(f"Nothing to inspect for {target!r}")
+                highlight = [list(box) for box in chosen]
+                view_region = [min(box[0] for box in chosen) - 4,
+                               min(box[1] for box in chosen) - 4,
+                               max(box[2] for box in chosen) + 4,
+                               max(box[3] for box in chosen) + 4]
+            else:
+                view_region = region
+            png, view = await asyncio.to_thread(
+                render_mod.schematic_view, ws.schematic_path, region=view_region,
+                width=width_px, highlight=highlight, scale_bar="scale" in annotate)
+            meta = {"ok": True, "kind": "schematic", "target": target, "view": view,
+                    "mm_per_px": round(1.0 / view["px_per_mm"], 4) if view.get("px_per_mm") else None,
+                    "highlight": highlight, "annotations": annotate}
+            return ToolReturn(return_value=[json.dumps(meta),
+                                            BinaryContent(data=png, media_type="image/png")],
+                              metadata=[_snapshot(ctx.deps.state)])
+
+        svc = ctx.deps.services
+        board_hash, index = await _working(ctx)
+        highlight_specs = [target] if target else []
+        entities: list[dict] = []
+        if target:
+            try:
+                entities = await asyncio.to_thread(geometry.entities_in, index, [target])
+            except Exception as exc:
+                raise ModelRetry(f"Unknown inspect target {target!r}: {exc}") from exc
+        if region is not None:
+            x1, y1, x2, y2 = (float(v) for v in region)
+            view_region = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+        elif entities:
+            bounds = [geometry.entity_shape(ent).bounds for ent in entities]
+            x1 = min(b[0] for b in bounds)
+            y1 = min(b[1] for b in bounds)
+            x2 = max(b[2] for b in bounds)
+            y2 = max(b[3] for b in bounds)
+            margin = max(1.5, 0.18 * max(x2 - x1, y2 - y1))
+            view_region = [x1 - margin, y1 - margin, x2 + margin, y2 + margin]
+        else:
+            ex, ey, ew, eh = index["board"]["edge_bbox"]
+            view_region = [ex, ey, ex + ew, ey + eh]
+        minimal = 3.0
+        if view_region[2] - view_region[0] < minimal or view_region[3] - view_region[1] < minimal:
+            cx, cy = ((view_region[0] + view_region[2]) / 2, (view_region[1] + view_region[3]) / 2)
+            view_region = [cx - minimal / 2, cy - minimal / 2, cx + minimal / 2, cy + minimal / 2]
+        width_px = max(200, min(6000, int(width_px)))
+        spec = {"mode": "2d", "side": side, "region": view_region, "width_px": width_px,
+                "highlight": highlight_specs, "labels": "refs" in annotate,
+                "pad_labels": "pads" in annotate, "scale_bar": "scale" in annotate}
+        try:
+            png_path, url = await asyncio.to_thread(svc.artifacts.render, board_hash, spec)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        w = view_region[2] - view_region[0]
+        h = view_region[3] - view_region[1]
+
+        def inside(x: float, y: float) -> bool:
+            return view_region[0] <= x <= view_region[2] and view_region[1] <= y <= view_region[3]
+
+        counts = {
+            "pads": sum(1 for item in index.get("pads", []) if inside(float(item["x"]), float(item["y"]))),
+            "vias": sum(1 for item in index.get("vias", []) if inside(float(item["x"]), float(item["y"]))),
+            "tracks": sum(1 for item in index.get("tracks", [])
+                          if inside((float(item["x1"]) + float(item["x2"])) / 2,
+                                    (float(item["y1"]) + float(item["y2"])) / 2)),
+        }
+        meta = {"ok": True, "kind": "board", "target": target, "side": side,
+                "view": {"x0": round(view_region[0], 3), "y0": round(view_region[1], 3),
+                         "w": round(w, 3), "h": round(h, 3)},
+                "mm_per_px": round(w / width_px, 4), "counts": counts,
+                "entities": [geometry.describe(ent) for ent in entities[:50]],
+                "annotations": annotate, "url": url}
+        ctx.deps.state.last_render = RenderInfo(
+            url=url, caption=f"inspect {target or view_region}", view=spec)
+        return ToolReturn(return_value=[json.dumps(meta),
+                                        BinaryContent(data=Path(png_path).read_bytes(),
+                                                      media_type="image/png")],
+                          metadata=[_snapshot(ctx.deps.state)])
 
     # ------------------------------------------------------------------ review
 
@@ -1800,16 +1978,75 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool
     async def diff_versions(ctx: RunContext[HarnessDeps], a: str, b: str = "working",
-                            scope: str = "nets") -> ToolReturn:
-        """Compare the schematic netlist (`scope="nets"`) or the BOM (`scope="bom"`) between two
-        revisions (a sha prefix or "working"). Returns added/removed nets and pin changes, so a
-        silent connectivity drift is visible before it reaches the board."""
+                            scope: str = "nets", region: list[float] | None = None) -> ToolReturn:
+        """Compare two revisions (a sha prefix or "working"): netlist (`scope="nets"`), BOM
+        (`scope="bom"`) or the board geometry (`scope="board"`).
+
+        Net/BOM diffs list added/removed/changed items; the board diff also returns two aligned
+        images — additions/changes highlighted on `b`, removals/changes on `a` — so a silent
+        layout drift is visible without reading pixels."""
         import os
         import tempfile
 
-        from kicad_harness.engine.schematic import Schematic
+        from kicad_harness.engine import qa
 
         ws = _ws(ctx)
+        svc = ctx.deps.services
+        if scope == "board":
+            def board_bytes(rev: str) -> bytes:
+                if rev in ("working", "WORKING"):
+                    return ws.board_path.read_bytes()
+                return ws.file_at(rev, "board.kicad_pcb")
+
+            try:
+                old_hash, _ = await asyncio.to_thread(
+                    lambda: svc.artifacts.materialize(board_bytes(a)))
+                new_hash, _ = await asyncio.to_thread(
+                    lambda: svc.artifacts.materialize(board_bytes(b)))
+                old_index = await asyncio.to_thread(svc.artifacts.index, old_hash)
+                new_index = await asyncio.to_thread(svc.artifacts.index, new_hash)
+            except Exception as exc:
+                return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+            diff = await asyncio.to_thread(qa.diff_indexes, old_index, new_index, region)
+            if diff["summary"] == {"added": 0, "removed": 0, "changed": 0}:
+                return ToolReturn(return_value={"ok": True, "scope": "board", **diff})
+            boxes = [item["bbox"] for name in ("added", "removed", "changed")
+                     for item in diff[name] if item.get("bbox")]
+            if region is None and boxes:
+                x1 = min(b[0] for b in boxes)
+                y1 = min(b[1] for b in boxes)
+                x2 = max(b[2] for b in boxes)
+                y2 = max(b[3] for b in boxes)
+                margin = max(2.0, 0.15 * max(x2 - x1, y2 - y1))
+                view = [x1 - margin, y1 - margin, x2 + margin, y2 + margin]
+            elif region is not None:
+                view = list(region)
+            else:
+                ex, ey, ew, eh = new_index["board"]["edge_bbox"]
+                view = [ex, ey, ex + ew, ey + eh]
+            changed = [item["uuid"] for item in diff["changed"]]
+            new_marks = [item["uuid"] for item in diff["added"]] + changed
+            old_marks = [item["uuid"] for item in diff["removed"]] + changed
+            spec_common = {"mode": "2d", "side": "front", "region": view, "width_px": 1400,
+                           "labels": True, "pad_labels": False, "scale_bar": True}
+            images = []
+            for board_hash, marks, caption in (
+                (new_hash, new_marks, f"added/changed on {b}"),
+                (old_hash, old_marks, f"removed/changed on {a}"),
+            ):
+                spec = {**spec_common, "highlight": marks}
+                try:
+                    path, url = await asyncio.to_thread(svc.artifacts.render, board_hash, spec)
+                except Exception as exc:
+                    return ToolReturn(return_value={"ok": False, "scope": "board", **diff,
+                                                    "error": _engine_error_text(exc)})
+                images.append((caption, url, Path(path).read_bytes()))
+            meta = {"ok": True, "scope": "board", "a": a, "b": b, "view": view,
+                    "images": [{"caption": caption, "url": url} for caption, url, _ in images],
+                    **diff}
+            payload: list = [json.dumps(meta)]
+            payload += [BinaryContent(data=png, media_type="image/png") for _, _, png in images]
+            return ToolReturn(return_value=payload)
 
         def load(rev: str):
             if rev in ("working", "WORKING"):
@@ -2089,13 +2326,16 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         except ValueError as exc:
             return ToolReturn(return_value={"ok": False, "error": f"the netlist is invalid: {exc}"})
         target = ws.schematic_path
-        # Keep the current file so a refused generation can put it back untouched.
+        # Keep the current file so a failed generation can put it back untouched.
         previous = target.read_bytes() if target.is_file() else None
         try:
             result = await asyncio.to_thread(
                 skidl_gen.generate, validated_parts, validated_nets, target,
+                config=ctx.deps.services.config,
             )
         except Exception as exc:
+            if previous is not None:
+                await asyncio.to_thread(target.write_bytes, previous)
             message = _engine_error_text(exc)
             # "Unable to find part NE555 in library Timer." is the usual mistake; name the
             # alternatives so the model can fix it instead of guessing again.

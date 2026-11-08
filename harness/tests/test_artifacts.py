@@ -88,7 +88,7 @@ def test_index_svg_drc_stats_build_once(arts, counted):
     assert arts.stats(h) == stats and stats["board"]["width"] == 25.0
     assert counted["drc"] == 1 and counted["stats"] == 1
     assert sorted(p.name for p in arts.dir(h).iterdir()) == [
-        "back.svg", "board.kicad_pcb", "drc.json", "front.svg", "index.json", "stats.json"]
+        "back.svg", "board.kicad_pcb", "drc.json", "front.svg", "index-v2.json", "stats.json"]
 
 
 def test_svg_can_be_plotted_one_layer_at_a_time(arts, counted):

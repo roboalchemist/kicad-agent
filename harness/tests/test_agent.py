@@ -730,3 +730,67 @@ async def test_mounting_holes_add_cutouts_and_keepouts(services, design):
     text = ws.board_path.read_text(encoding="utf-8")
     assert text.count("gr_circle") >= 4
     assert text.count("keepout") >= 4
+
+
+async def test_inspection_tools_return_measurements_and_images(services, design):
+    """inspect/probe/clearance/silkscreen/courtyard are the read-only visual surface."""
+    name, ws = design
+    board_hash, _ = services.artifacts.materialize(ws.board_path.read_bytes())
+    index = services.artifacts.index(board_hash)
+    target = next(p for p in index["pads"] if p["ref"] == "U1" and p["pad"] == "1")
+    script = Script([
+        [("inspect", {"target": "U1"})],
+        [("measure_clearance", {"a": "net:GND", "b": "net:VCC", "rule_mm": 0.1})],
+        [("probe", {"x": target["x"], "y": target["y"]})],
+        [("silkscreen_check", {})],
+        [("courtyard_check", {})],
+        "done",
+    ])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("inspect the board", deps=deps_for(services, name))
+    assert result.output == "done"
+
+    returns = {p.tool_name: p for m in result.all_messages() for p in getattr(m, "parts", [])
+               if isinstance(p, ToolReturnPart)}
+    image_parts = returns["inspect"].content
+    assert isinstance(image_parts, list)
+    meta = json.loads(image_parts[0])
+    assert meta["kind"] == "board" and meta["mm_per_px"] > 0
+    assert meta["view"]["w"] > 0 and meta["view"]["h"] > 0
+    assert any(isinstance(item, BinaryContent) for item in image_parts[1:])
+
+    clearance = returns["measure_clearance"].content
+    assert clearance["ok"] is True and clearance["distance"] >= 0
+    assert clearance["method"] == "net-net" and clearance["pass"] is True
+    assert clearance["layer"] == "F.Cu"
+
+    probe = returns["probe"].content
+    assert any(hit["kind"] == "pad" and hit["ref"] == "U1" and hit["pad"] == "1"
+               for hit in probe["hits"])
+
+    silk = returns["silkscreen_check"].content
+    assert silk["checked"] > 0 and isinstance(silk["collisions"], list)
+    assert silk["rule"].startswith("pcb-silkscreen#")
+    yard = returns["courtyard_check"].content
+    assert yard["checked"] + len(yard["missing"]) > 0 and isinstance(yard["overlaps"], list)
+    assert yard["rule"].startswith("pcb-placement#")
+
+
+async def test_diff_versions_board_returns_two_aligned_images(services, design):
+    name, ws = design
+    script = Script([
+        [("move_footprint", {"ref": "D1", "x": 20.0, "y": 15.0})],
+        [("diff_versions", {"a": "HEAD^", "b": "working", "scope": "board"})],
+        "done",
+    ])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("move D1 and diff", deps=deps_for(services, name))
+    assert result.output == "done"
+    diff = next(p for m in result.all_messages() for p in getattr(m, "parts", [])
+                if isinstance(p, ToolReturnPart) and p.tool_name == "diff_versions")
+    assert isinstance(diff.content, list)
+    meta = json.loads(diff.content[0])
+    assert meta["scope"] == "board" and meta["summary"]["changed"] >= 1
+    assert len([item for item in diff.content[1:] if isinstance(item, BinaryContent)]) == 2

@@ -141,6 +141,7 @@ def generate(
     symbol_dirs: list[Path] | None = None,
     footprint_dirs: list[Path] | None = None,
     timeout: float = 180,
+    config: Any | None = None,
 ) -> GenerationResult:
     """Write a schematic for ``parts``/``nets`` to ``out`` using skidl.
 
@@ -160,12 +161,15 @@ def generate(
     # skidl's auto-router fails intermittently ("RoutingFailure") on netlists it routes fine on
     # the next try, so a long goal loop must not treat one failure as permanent.
     last_error: Exception | None = None
-    for attempt in range(8):
+    # A netless sheet has no connectivity to validate, and retrying it would only discard the
+    # existing drawing eight times; one attempt is enough (the caller refuses it afterwards).
+    attempts = 8 if nets else 1
+    for attempt in range(attempts):
         try:
             result = _run_once(payload, out, env, timeout)
         except EngineError as exc:
             last_error = exc
-            if "RoutingFailure" not in str(exc) or attempt == 7:
+            if "RoutingFailure" not in str(exc) or attempt == attempts - 1:
                 raise
             # Its placement/routing pass is stochastic: a short pause then a fresh attempt
             # usually succeeds, and a long goal loop must not surface that as a hard failure.
@@ -173,16 +177,30 @@ def generate(
             continue
         # The router can also *succeed* while drawing a wire that shorts two nets (seen as two
         # PWR_FLAGs on one net). Verify the netlist really matches before accepting the sheet.
-        if _netlist_matches(out, nets):
+        if _netlist_matches(out, nets) and (not nets or _erc_clean(out, config)):
             return result
         last_error = EngineError(
             "SchematicGeneration",
             "skidl drew a schematic whose nets do not match the requested connections "
-            f"(attempt {attempt + 1}/8); retrying",
+            f"(attempt {attempt + 1}/{attempts}); retrying",
         )
         time.sleep(0.3 * (attempt + 1))
     assert last_error is not None
     raise last_error
+
+
+def _erc_clean(out: Path, config: Any | None = None) -> bool:
+    """KiCad's own ERC is the final word on a generated sheet.
+
+    Power symbols that skidl drops unconnected, or a wire that merges two nets without changing
+    the component partition, show up here and nowhere else. If ERC cannot run, do not block.
+    """
+    try:
+        from . import kicad_cli
+
+        return kicad_cli.erc(out, config=config)["counts"]["errors"] == 0
+    except Exception:
+        return True
 
 
 def _netlist_matches(out: Path, nets: list[NetSpec]) -> bool:

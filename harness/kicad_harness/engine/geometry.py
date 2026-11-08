@@ -261,6 +261,160 @@ def clearance(index: dict[str, Any], net_a: str, net_b: str, layer: str | None =
     return best
 
 
+def _copper_layers(index: dict[str, Any]) -> list[str]:
+    return [str(layer) for layer in (index.get("board", {}).get("layers") or [])
+            if str(layer).endswith(".Cu")]
+
+
+def _intersects(ent: Entity, region: tuple[float, float, float, float]) -> bool:
+    try:
+        return entity_shape(ent).intersects(Polygon([(region[0], region[1]), (region[2], region[1]),
+                                                     (region[2], region[3]), (region[0], region[3])]))
+    except Exception:
+        return False
+
+
+def copper_in_region(index: dict[str, Any], region: Sequence[float],
+                     layer: str | None = None) -> list[Entity]:
+    """Copper entities that intersect ``[x1, y1, x2, y2]``, optionally on one layer."""
+    x1, y1, x2, y2 = (float(v) for v in region)
+    box_region = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    out: list[Entity] = []
+    for key, kind in _KINDS[1:]:
+        for ent in index.get(key, []):
+            if not ent.get("net"):
+                continue
+            if layer and not _on_layer(ent, layer):
+                continue
+            tagged = _with_kind(ent, kind)
+            if _intersects(tagged, box_region):
+                out.append(tagged)
+    return out
+
+
+def _pair_distance(a: Entity, b: Entity) -> dict[str, Any] | None:
+    try:
+        sa, sb = entity_shape(a), entity_shape(b)
+    except Exception:
+        return None
+    distance = float(sa.distance(sb))
+    pa, pb = nearest_points(sa, sb)
+    return {
+        "distance": round(distance, 4),
+        "a_point": [round(pa.x, 4), round(pa.y, 4)],
+        "b_point": [round(pb.x, 4), round(pb.y, 4)],
+        "a": describe(a),
+        "b": describe(b),
+    }
+
+
+def clearance_query(index: dict[str, Any], a: Any = None, b: Any = None,
+                    region: Sequence[float] | None = None,
+                    layer: str | None = None) -> dict[str, Any]:
+    """Nearest copper clearance for one of four selector shapes.
+
+    - ``a`` and ``b`` are nets: layer-by-layer net-to-net clearance.
+    - ``a`` and ``b`` are entities: edge-to-edge distance (``measure``).
+    - ``a`` is a net and ``b`` is omitted: nearest copper on any other net.
+    - ``region`` only: nearest pair of different nets inside the region.
+
+    The result always carries ``distance``, the two entities and the layer. Raising is left to
+    the caller so the tool can turn a miss into data.
+    """
+    nets = [str(n) for n in index.get("nets", []) if n]
+    names = {n[4:] if str(n).startswith("net:") else str(n) for n in nets}
+
+    def is_net(value: Any) -> bool:
+        return isinstance(value, str) and (value[4:] if value.startswith("net:") else value) in names
+
+    if a and b and is_net(a) and is_net(b):
+        result = clearance(index, a, b, layer)
+        return {**result, "method": "net-net", "net_a": a[4:] if a.startswith("net:") else a,
+                "net_b": b[4:] if b.startswith("net:") else b}
+
+    if a and b:
+        result = measure(index, a, b)
+        return {**result, "method": "entity", "layer": layer}
+
+    if a and is_net(a):
+        name = a[4:] if a.startswith("net:") else a
+        best: dict[str, Any] | None = None
+        for other in sorted(names - {name}):
+            try:
+                candidate = clearance(index, name, other, layer)
+            except EngineError:
+                continue
+            if best is None or candidate["distance"] < best["distance"]:
+                best = candidate
+                best["net_a"], best["net_b"] = name, other
+        if best is None:
+            raise EngineError("NotFound", f"net {name!r} has no copper near another net")
+        return {**best, "method": "net-other"}
+
+    if not region:
+        raise EngineError("InvalidParams", "give two selectors or a region [x1,y1,x2,y2]")
+
+    entities = copper_in_region(index, region, layer)
+    if len(entities) > 600:
+        raise EngineError("InvalidParams",
+                          f"region contains {len(entities)} copper items; narrow it for a pairwise check")
+    best = None
+    for i, left in enumerate(entities):
+        for right in entities[i + 1:]:
+            if left.get("net") == right.get("net"):
+                continue
+            if layer is None and not (set(_layers_of(left, index)) & set(_layers_of(right, index))):
+                continue
+            candidate = _pair_distance(left, right)
+            if candidate is None:
+                continue
+            if best is None or candidate["distance"] < best["distance"]:
+                shared = set(_layers_of(left, index)) & set(_layers_of(right, index))
+                candidate["layer"] = layer or (sorted(shared)[0] if shared else None)
+                candidate["net_a"], candidate["net_b"] = left.get("net"), right.get("net")
+                best = candidate
+    if best is None:
+        raise EngineError("NotFound", "no two different nets share copper in that region")
+    return {**best, "method": "region"}
+
+
+def _layers_of(ent: Entity, index: dict[str, Any]) -> list[str]:
+    kind = ent["kind"]
+    if kind == "pad":
+        return [layer for layer in ent.get("layers", []) if layer.endswith(".Cu")]
+    if kind == "via":
+        return _copper_layers(index)
+    if kind == "zone":
+        return [layer for layer in (ent.get("layers") or [ent.get("layer")]) if layer and layer.endswith(".Cu")]
+    return [ent["layer"]] if ent.get("layer") else []
+
+
+def probe(index: dict[str, Any], x: float, y: float) -> dict[str, Any]:
+    """What is at a board point: copper hits first, then the footprint and its reference text."""
+    point = Point(float(x), float(y))
+    hits: list[dict[str, Any]] = []
+    for key, kind in _KINDS[1:]:
+        for ent in index.get(key, []):
+            try:
+                tagged = _with_kind(ent, kind)
+                if entity_shape(tagged).covers(point):
+                    hits.append(describe(tagged))
+            except Exception:
+                continue
+    for fp in index.get("footprints", []):
+        bx, by, bw, bh = fp.get("bbox") or (0, 0, 0, 0)
+        if bx <= point.x <= bx + bw and by <= point.y <= by + bh:
+            hits.append({"kind": "footprint", "ref": fp.get("ref"), "uuid": fp.get("uuid")})
+            text = fp.get("ref_text") or {}
+            tx, ty, tw, th = text.get("bbox") or (0, 0, 0, 0)
+            if text.get("visible") and tx <= point.x <= tx + tw and ty <= point.y <= ty + th:
+                hits.append({"kind": "silk_text", "ref": fp.get("ref"), "layer": text.get("layer")})
+    edge = index.get("board", {}).get("edge_bbox") or (0, 0, 0, 0)
+    within = bool(edge[0] <= point.x <= edge[0] + edge[2] and edge[1] <= point.y <= edge[1] + edge[3])
+    return {"point": [round(float(x), 4), round(float(y), 4)], "within_board": within,
+            "hits": hits}
+
+
 def entities_in(index: dict[str, Any], specs: Iterable[Any]) -> list[Entity]:
     """Resolve several specs and concatenate the entities (used for highlights)."""
     out: list[Entity] = []
