@@ -980,49 +980,57 @@ def route(doc: Schematic, *, max_mm: float = 80.0) -> dict[str, Any]:
             "partitions_ok": _partitions(doc) == target}
 
 def _align_symbols(doc: Schematic, pin_net: dict[tuple[str, str], str], *,
-                   gap: float = 4.0) -> int:
+                   gap: float = 4.0, passes: int = 3) -> int:
     """Place each right-hand part of a point-to-point net on the row of the pin it connects to.
 
-    Parts are processed column by column, left to right, so a move made for one net is seen by
-    the next column. Within a column the followers are sorted by their target row and pushed
-    apart just enough not to touch, which turns a pile of labels into visible channels.
+    Targets must be recomputed on every pass: aligning the relays to their drivers moves the
+    relays, so aligning the terminals in the same pass against the *old* relay rows is what made
+    the terminal pitch 2.3x the relay pitch and left every channel skew-whiff.
     """
     net_pins: dict[str, list[tuple[str, str]]] = {}
     for (ref, number), name in pin_net.items():
         net_pins.setdefault(name, []).append((ref, number))
 
-    wanted: dict[float, list[tuple[float, str, str, float]]] = {}
-    for _name, pins in net_pins.items():
-        if len(pins) != 2:
-            continue
-        (ref_a, pin_a), (ref_b, pin_b) = pins
-        a = doc.pin_position(doc._placement(ref_a), pin_a)
-        b = doc.pin_position(doc._placement(ref_b), pin_b)
-        if a is None or b is None or abs(a[0] - b[0]) < 1.0:
-            continue
-        follower, follower_pin, target = (
-            (ref_b, pin_b, a[1]) if b[0] > a[0] else (ref_a, pin_a, b[1]))
-        follower_x = doc._placement(follower).x
-        wanted.setdefault(round(follower_x, 1), []).append(
-            (target, follower, follower_pin, doc.pin_position(doc._placement(follower), follower_pin)[1])
-        )
-
     aligned = 0
-    for column_x in sorted(wanted):
-        entries = sorted(wanted[column_x], key=lambda item: (item[0], _natural_key(item[1])))
-        cursor: float | None = None
-        for target_y, follower, follower_pin, current_pin_y in entries:
-            placement = doc._placement(follower)
-            if placement is None:
+    for _pass in range(passes):
+        wanted: dict[float, list[tuple[float, str, str, float]]] = {}
+        for _name, pins in net_pins.items():
+            if len(pins) != 2:
                 continue
-            box = symbol_boxes(doc)[follower]
-            desired = placement.y + (target_y - current_pin_y)
-            if cursor is not None:
-                top = box[1] + (desired - placement.y)
-                if top < cursor:
-                    desired += cursor - top
-            doc.move_symbol(follower, placement.x, desired)
-            new_box = symbol_boxes(doc)[follower]
-            cursor = new_box[3] + gap
-            aligned += 1
+            (ref_a, pin_a), (ref_b, pin_b) = pins
+            a = doc.pin_position(doc._placement(ref_a), pin_a)
+            b = doc.pin_position(doc._placement(ref_b), pin_b)
+            if a is None or b is None or abs(a[0] - b[0]) < 1.0:
+                continue
+            follower, follower_pin, target = (
+                (ref_b, pin_b, a[1]) if b[0] > a[0] else (ref_a, pin_a, b[1]))
+            follower_x = doc._placement(follower).x
+            wanted.setdefault(round(follower_x, 1), []).append(
+                (target, follower, follower_pin,
+                 doc.pin_position(doc._placement(follower), follower_pin)[1])
+            )
+        moved_this_pass = 0
+        for column_x in sorted(wanted):
+            entries = sorted(wanted[column_x], key=lambda item: (item[0], _natural_key(item[1])))
+            cursor: float | None = None
+            for target_y, follower, follower_pin, current_pin_y in entries:
+                placement = doc._placement(follower)
+                if placement is None:
+                    continue
+                box = symbol_boxes(doc)[follower]
+                desired = placement.y + (target_y - current_pin_y)
+                if cursor is not None:
+                    top = box[1] + (desired - placement.y)
+                    if top < cursor:
+                        desired += cursor - top
+                if abs(desired - placement.y) < 0.05:
+                    cursor = box[3] + gap
+                    continue
+                doc.move_symbol(follower, placement.x, desired)
+                new_box = symbol_boxes(doc)[follower]
+                cursor = new_box[3] + gap
+                moved_this_pass += 1
+                aligned += 1
+        if not moved_this_pass:
+            break
     return aligned

@@ -328,4 +328,26 @@ def png_size(png: bytes) -> tuple[int, int]:
         return im.size
 
 
-__all__ = ["render_2d", "render_3d_view", "frame_3d", "svg_frame", "SvgFrame", "png_size", "CAMERA_K"]
+__all__ = ["render_2d", "render_3d_view", "schematic_png", "frame_3d", "svg_frame", "SvgFrame", "png_size", "CAMERA_K"]
+
+def schematic_png(schematic: str | os.PathLike[str], out: str | os.PathLike[str], *,
+                  width: int = 1800) -> Path:
+    """Rasterise a whole ``.kicad_sch`` sheet, so the agent can simply look at it.
+
+    The numeric legibility check cannot see taste: a sheet can score 0 and still look wrong at a
+    glance (a part marooned at the edge, a wall of labels, a channel that reads backwards). This is
+    the plain "get the image" companion to ``analyze``.
+    """
+    import cairosvg
+
+    source = Path(schematic)
+    target = Path(out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        svg = kicad_cli.export_sch_svg(source, tmp)[0]
+        cairosvg.svg2png(url=str(svg), write_to=str(target),
+                         output_width=min(int(width), MAX_PX), background_color="#FFFFFF")
+    if not target.is_file():
+        raise EngineError("RenderFailed", f"no PNG written to {target}")
+    return target
+

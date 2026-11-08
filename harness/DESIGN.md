@@ -351,7 +351,14 @@ Three further pieces let the agent finish a sheet itself rather than receive a f
 The agent reaches these through `check_schematic_layout`, `tidy_schematic`, `route_schematic`
 and the edit tools (`move_schematic_symbol`, `set_symbol_value`, `disconnect_schematic`,
 `label_pin`); `route_schematic` also runs ERC before/after and reverts the whole edit if errors
-increase. The goal loop keeps running until `[legible]` passes.
+increase.
+
+Numbers cannot see taste, so both checks also return a **plain image**: `check_schematic_layout`
+renders the whole sheet (`render.schematic_png`, cached by content hash) and `check` renders the
+fitted front board, each alongside its results; `render_schematic` returns the sheet on demand.
+The agent is told to look at the picture and fix what it can actually see (rows out of sequence,
+colliding reference text, a marooned part) even when the score is 0. The goal loop keeps running
+until `[legible]` passes.
 
 `evaluate(goal, index, drc, threads) -> {"met": bool, "criteria": [{"id", "type", "passed", "value", "detail"}]}`.
 

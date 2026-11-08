@@ -250,6 +250,19 @@ def _schematic_layout_facts(ws) -> dict[str, Any] | None:
         return None
 
 
+def _schematic_image(svc, ws) -> tuple[bytes, str]:
+    """PNG bytes and URL of the current schematic sheet (cached by content hash)."""
+    import hashlib
+
+    from kicad_harness.engine import render as render_mod
+
+    key = hashlib.sha256(ws.schematic_path.read_bytes()).hexdigest()[:16]
+    out = Path(svc.config.renders) / f"schematic-{key}.png"
+    if not out.is_file():
+        render_mod.schematic_png(ws.schematic_path, out)
+    return out.read_bytes(), f"/api/renders/{out.name}"
+
+
 def _parts_facts(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
     """Ground truth about which parts exist: schematic symbols and board footprints."""
     from kicad_harness.agent.audit import design_parts
@@ -666,6 +679,7 @@ Phases:
 - Arrange by circuit, not by reference: a part belongs beside the part it serves. Series/pull-up resistors sit by the input they protect, decoupling capacitors by the IC they decouple, and each power symbol at the pin it names. `tidy_schematic` puts 2-pin passives beside their owner; `check_schematic_layout` lists the remaining offenders under `findings` (a passive far from its owner, a point-to-point net left as two distant labels, a power symbol whose value contradicts its net). Act on those findings rather than accepting them.
 - `findings` also surfaces broken power symbols (e.g. a GND symbol wired to +5V). Fix the netlist or the symbol first: no placement can put a ground next to a part while the symbol names a different net.
 - Once the parts are close, call `route_schematic` to draw direct wires for point-to-point nets instead of leaving two labels. It keeps the net names and rolls back any wire that would change connectivity; if it skips a net, the two parts are too far apart or a wire would cross a pin — move them closer and try again.
+- Look at the sheet as an image too: `check_schematic_layout` returns the rendered schematic with its score, and `check` returns the rendered board with its criteria. A sheet can score 0 and still look wrong at a glance — a part marooned at the edge, channel rows that do not line up, a wall of duplicate labels. Use `render_schematic` / `render_view` for a closer look, and fix what you see before calling the work finished.
 
 Part sourcing (do this before choosing parts):
 - Boards are assembled by JLCPCB, so a part is only real if JLCPCB stocks it. Use `find_parts` to search their catalogue: pass `query` for a part number (e.g. "NE555" finds NE555DR) or `category` to browse by type (e.g. "LED", "Relays"). It reports stock, unit price, and whether a part is `basic` (no assembly fee) or `extended` (a per-part reel fee). Prefer basic parts with large stock unless the user asks otherwise. The catalogue's description text is empty, so searching for words like "red LED" will not work — browse the category instead.
@@ -904,6 +918,22 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             "goal_met": evaluation["met"],
             "criteria": evaluation["criteria"],
         }
+        # A plain image of the layout, so the model can catch what DRC cannot: a part stranded
+        # at the edge, a wall of labels, a channel that reads backwards.
+        ws = _ws(ctx)
+        if ws.board_path.is_file():
+            try:
+                spec = {"mode": "2d", "side": "front"}
+                png_path, url = await asyncio.to_thread(svc.artifacts.render, board_hash, spec)
+                ctx.deps.state.last_render = RenderInfo(
+                    url=url, caption="Board layout, front (fitted)", view=spec)
+                png = Path(png_path).read_bytes()
+                return ToolReturn(
+                    return_value=[result, BinaryContent(data=png, media_type="image/png")],
+                    metadata=[_snapshot(ctx.deps.state)],
+                )
+            except Exception:
+                pass
         return ToolReturn(return_value=result, metadata=[_snapshot(ctx.deps.state)])
 
     @agent.tool
@@ -1542,7 +1572,37 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         except Exception as exc:
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         await _sync_schematic_state(ctx)
-        return ToolReturn(return_value=report, metadata=[_snapshot(ctx.deps.state)])
+        ws = _ws(ctx)
+        try:
+            png, url = await asyncio.to_thread(_schematic_image, ctx.deps.services, ws)
+        except Exception:
+            return ToolReturn(return_value=report, metadata=[_snapshot(ctx.deps.state)])
+        ctx.deps.state.last_render = RenderInfo(url=url, caption="Schematic sheet", view={})
+        return ToolReturn(
+            return_value=[report, BinaryContent(data=png, media_type="image/png")],
+            metadata=[_snapshot(ctx.deps.state)],
+        )
+
+    @agent.tool
+    async def render_schematic(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
+        """Render the whole schematic sheet as an image you can look at.
+
+        Same picture the UI shows. Use it after tidy_schematic: the legibility score catches
+        overlaps and dangling wires, but only the image shows a sheet that is technically clean
+        and still reads badly (a channel that runs backwards, a part marooned at the edge, a wall
+        of duplicate labels)."""
+        ws = _ws(ctx)
+        try:
+            png, url = await asyncio.to_thread(_schematic_image, ctx.deps.services, ws)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        caption = "Schematic sheet"
+        ctx.deps.state.last_render = RenderInfo(url=url, caption=caption, view={})
+        return ToolReturn(
+            return_value=[json.dumps({"url": url, "caption": caption}),
+                          BinaryContent(data=png, media_type="image/png")],
+            metadata=[_snapshot(ctx.deps.state)],
+        )
 
     @agent.tool(sequential=True)
     async def tidy_schematic(ctx: RunContext[HarnessDeps], paper: str | None = None) -> ToolReturn:

@@ -193,3 +193,44 @@ def test_tidy_aligns_the_pins_of_a_cross_stage_net(tmp_path: Path, libraries, ma
     before = layout._partitions(doc)
     report = layout.route(doc)
     assert report["partitions_ok"] and "SIG" in report["wired"], report
+
+
+def test_alignment_follows_a_chain_of_stages(tmp_path: Path, libraries, many_pin: str) -> None:
+    """Aligning U2 to U1 moves U2; U3 must then be aligned to U2's *new* row (second pass).
+
+    The three parts are put in three columns by hand so the test exercises the multi-pass
+    target refresh itself, not the stage assignment (a hub U2 would put U1 and U3 in one column,
+    where they cannot both sit on pins 6.35 mm apart).
+    """
+    doc = sch.Schematic.create(tmp_path / "chain.kicad_sch", libraries=libraries)
+    doc.add_symbol(many_pin, "U1", 60.0, 60.0)
+    doc.add_symbol(many_pin, "U2", 160.0, 120.0)
+    doc.add_symbol(many_pin, "U3", 260.0, 180.0)
+    doc.connect_pins(("U1", "1"), ("U2", "1"), net="A")
+    doc.connect_pins(("U2", "2"), ("U3", "1"), net="B")
+    layout._align_symbols(doc, layout._alias_nets(doc), passes=3)
+
+    def pin_point(ref, number):
+        return doc.pin_position(doc._placement(ref), number)
+
+    a1, a2 = pin_point("U1", "1"), pin_point("U2", "1")
+    b2, b3 = pin_point("U2", "2"), pin_point("U3", "1")
+    assert abs(a1[1] - a2[1]) < 0.2, "stage 1 is not on one row"
+    assert abs(b2[1] - b3[1]) < 0.2, "stage 2 was aligned to U2's old row"
+
+
+def test_schematic_png_is_a_viewable_image(tmp_path: Path, libraries, two_pin: str) -> None:
+    """The agent gets a plain picture of the sheet, not just numbers."""
+    from kicad_harness.engine import render
+
+    doc = sch.Schematic.create(tmp_path / "shot.kicad_sch", libraries=libraries)
+    doc.add_symbol(two_pin, "R1", 60.0, 60.0)
+    doc.add_symbol(two_pin, "R2", 100.0, 60.0)
+    doc.connect_pins(("R1", "1"), ("R2", "1"), net="MID")
+    doc.save()
+    out = render.schematic_png(doc.path, tmp_path / "shot.png", width=900)
+    data = out.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    from PIL import Image
+    with Image.open(out) as image:
+        assert image.width == 900 and image.height > 100
