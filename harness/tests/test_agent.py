@@ -718,3 +718,15 @@ async def test_via_stitching_places_vias_on_the_net(services, design):
     index = services.artifacts.index(board_hash)
     vias = index.get("vias") or []
     assert any((v.get("net") or "") == net for v in vias), vias[:3]
+
+
+async def test_mounting_holes_add_cutouts_and_keepouts(services, design):
+    name, ws = design
+    script = Script([[("add_mounting_holes", {"drill": 3.2, "inset": 4.0, "pad": 6.0})], "done"])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("add mounting holes", deps=deps_for(services, name))
+    assert result.output == "done"
+    text = ws.board_path.read_text(encoding="utf-8")
+    assert text.count("gr_circle") >= 4
+    assert text.count("keepout") >= 4

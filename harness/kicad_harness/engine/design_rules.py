@@ -107,8 +107,9 @@ def _write_project(ws, rules: dict[str, Any]) -> Path:
             patterns.append({"netclass": name, "pattern": pattern})
     net["classes"] = classes
     net["netclass_patterns"] = patterns
-    # KiCad has no per-class track-width DRC, so also lower the board's minimums to the weakest
-    # declared class: a track thinner than every declared class is then a KiCad error too.
+    # KiCad has no per-class track-width DRC, so the board minimums mirror the weakest declared
+    # class: a track thinner than every declared class is then a KiCad error too. The declaration
+    # is the source of truth, so changing a class updates these rather than only raising them.
     widths = [float(spec.get("width")) for name, spec in (rules.get("netclasses") or {}).items()
               if name != "Default" and spec.get("explicit") and spec.get("width")]
     clearances = [float(spec.get("clearance")) for name, spec in (rules.get("netclasses") or {}).items()
@@ -116,11 +117,9 @@ def _write_project(ws, rules: dict[str, Any]) -> Path:
     design = project.setdefault("board", {}).setdefault("design_settings", {})
     board_rules = design.setdefault("rules", {})
     if widths:
-        board_rules["min_track_width"] = max(float(board_rules.get("min_track_width") or 0),
-                                             min(widths))
+        board_rules["min_track_width"] = min(widths)
     if clearances:
-        board_rules["min_clearance"] = max(float(board_rules.get("min_clearance") or 0),
-                                           min(clearances))
+        board_rules["min_clearance"] = min(clearances)
     net.setdefault("meta", {"version": 5})
     net.setdefault("net_colors", {})
     net.setdefault("netclass_assignments", {})

@@ -235,3 +235,28 @@ def test_manufacturing_bom_carries_alternates_and_lifecycle(tmp_path: Path, engi
     assert row["alternates"] == "C111111"
     assert row["msl"] == "1" and row["esd"] == "HBM-2kV"
     assert row["lead_time_days"] == "14" and row["lifecycle"] == "active"
+
+
+def test_copper_balance_reports_a_one_sided_board() -> None:
+    from kicad_harness.engine import balance
+
+    index = {
+        "tracks": [{"layer": "F.Cu", "x1": 0, "y1": 0, "x2": 10, "y2": 0, "width": 1.0}],
+        "zones": [{"layer": "F.Cu", "filled": [[[0, 0], [10, 0], [10, 10], [0, 10]]]}],
+    }
+    result = balance.report(index)
+    assert result["front_mm2"] == 110.0 and result["back_mm2"] == 0.0
+    assert result["ratio"] == 1.0 and result["balanced"] is False
+    even = balance.report({"tracks": [
+        {"layer": "F.Cu", "x1": 0, "y1": 0, "x2": 10, "y2": 0, "width": 1.0},
+        {"layer": "B.Cu", "x1": 0, "y1": 0, "x2": 10, "y2": 0, "width": 1.0},
+    ], "zones": []})
+    assert even["ratio"] == 0.5 and even["balanced"] is True
+
+
+def test_circular_cutout_is_written_to_edge_cuts(engine, board) -> None:
+    engine.set_outline(board, width=40.0, height=30.0)
+    result = engine.add_cutout(board, 10.0, 10.0, 3.2)
+    assert result["diameter"] == 3.2
+    text = Path(board).read_text(encoding="utf-8")
+    assert text.count("gr_circle") >= 1

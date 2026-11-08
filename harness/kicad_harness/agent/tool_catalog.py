@@ -51,6 +51,8 @@ TOOLS: dict[str, tuple[str, str]] = {
     "set_net_class": ("board", "Declare width/clearance/impedance per net group; new tracks use it and check flags narrower ones."),
     "set_stackup": ("board", "Declare copper layers, material, er/height and impedance; check compares it with the board."),
     "add_keepout": ("board", "Rule-area keepout: no tracks/vias/pours inside the polygon."),
+    "add_cutout": ("board", "Cut a circular hole in the board outline."),
+    "add_mounting_holes": ("board", "Add four corner mounting holes with copper keepouts."),
     "import_outline": ("board", "Set Edge.Cuts from an ASCII DXF LWPOLYLINE."),
     "place_test_points": ("board", "Add one test point per net as symbol + footprint, keeping parity valid."),
     "export_manufacturing": ("board", "Write Gerbers, drill, pick-and-place and BOM plus a manifest for ordering."),

@@ -149,10 +149,10 @@ thermal), plus knowledge search.
 | Generator regression | **done** — the bundled golden flow draws a four-part design with `generate_schematic` from scratch. |
 | Connection retry | **done** — `stream_with_token_retry` retries provider connection errors with backoff. |
 | High-speed | **done** — `route_diff_pair`, `match_length`, via types (through/micro/blind/buried) and `add_via_stitching`. No serpentine generator. |
-| Mechanical outline | **done for wireframes** — polygon outline, `import_outline` for DXF (LWPOLYLINE/LINE) and STEP (EDGE_CURVE lines and sampled arcs), `add_keepout` rule areas. STEP B-spline edges are approximated by their endpoints. |
+| Mechanical outline | **done for wireframes** — polygon outline, `import_outline` for DXF (LWPOLYLINE/LINE) and STEP (EDGE_CURVE lines and sampled arcs), `add_keepout` rule areas, `add_cutout` circular holes and `add_mounting_holes` (four corner holes with copper keepouts). STEP B-spline edges are approximated by their endpoints. |
 | Silkscreen automation | **done** — collision-aware `place_silkscreen`. |
 | Test points | **done** — end-to-end test: one symbol + one footprint per net with the same reference, pad on the net. |
-| Thermal vias | **done** — `add_thermal_vias`; `add_via_stitching`. |
+| Thermal vias / copper balance | **done** — `add_thermal_vias`, `add_via_stitching`, and a copper-balance estimate (front/back area and ratio) in `check`. |
 | BOM lifecycle | **done** — alternates, MSL, ESD class, lead time and lifecycle status in `bom.csv`. |
 | Layout metrics | **done** — owner distance, alignment, wire length, crossings, utilisation; `layout_metric` goal criterion. |
 | Netlist/BOM diff | **done** — `diff_versions`. |
@@ -169,3 +169,4 @@ thermal), plus knowledge search.
 - Netclass *track width* is a harness check because KiCad DRC only enforces a board-wide minimum
   (which this code lowers to the weakest declared class).
 - No automatic serpentine/length tuning; `match_length` reports and `route_diff_pair` routes.
+- No component height/clearance check: that needs 3D models per footprint.

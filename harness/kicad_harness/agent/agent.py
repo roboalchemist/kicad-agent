@@ -1039,7 +1039,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         board_hash, _ = await _working(ctx)
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
         evaluation = await _evaluate(ctx)
-        from kicad_harness.engine import design_rules, manufacturing
+        from kicad_harness.engine import balance, design_rules, manufacturing
 
         index = await asyncio.to_thread(svc.artifacts.index, board_hash)
         rules = await asyncio.to_thread(design_rules.load, ws)
@@ -1083,6 +1083,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 "violations": rule_violations[:20],
             },
             "manufacturing": mfg,
+            "copper_balance": balance.report(index),
             "schematic": schematic_report,
         }
         try:
@@ -1512,6 +1513,42 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             ),
             risky=True,
         )
+
+    @agent.tool(sequential=True)
+    async def add_cutout(ctx: RunContext[HarnessDeps], x: float, y: float,
+                         diameter: float) -> ToolReturn:
+        """Cut a circular hole in the board (mounting hole, strain relief) at (x, y) mm."""
+        return await _edit(
+            ctx, "add_cutout", f"Cut a {diameter:g} mm hole at ({x:g}, {y:g})",
+            lambda b: engine(ctx).call("add_cutout", board=b, x=x, y=y, diameter=diameter),
+            risky=True,
+        )
+
+    @agent.tool(sequential=True)
+    async def add_mounting_holes(
+        ctx: RunContext[HarnessDeps], drill: float = 3.2, inset: float = 5.0,
+        pad: float = 6.0,
+    ) -> ToolReturn:
+        """Add four corner mounting holes (`drill` mm) `inset` mm from the board edge, with a
+        `pad`-diameter keepout ring so copper stays away from the screw head."""
+        board_hash, index = await _working(ctx)
+        ex, ey, ew, eh = index["board"]["edge_bbox"]
+        holes = [(ex + inset, ey + inset), (ex + ew - inset, ey + inset),
+                 (ex + inset, ey + eh - inset), (ex + ew - inset, ey + eh - inset)]
+
+        def work(board) -> dict:
+            eng = engine(ctx)
+            for hx, hy in holes:
+                eng.call("add_cutout", board=board, x=hx, y=hy, diameter=drill)
+                radius = max(drill, pad) / 2 + 0.5
+                ring = [[hx + radius * math.cos(2 * math.pi * i / 24),
+                         hy + radius * math.sin(2 * math.pi * i / 24)] for i in range(24)]
+                eng.call("add_keepout", board=board, polygon=ring, no_pads=True,
+                         no_tracks=True, no_vias=True, no_pours=True)
+            return {"holes": len(holes), "drill": drill, "inset": inset}
+
+        return await _edit(ctx, "add_mounting_holes", "Add four mounting holes", work,
+                           risky=True)
 
     @agent.tool(sequential=True)
     async def add_keepout(

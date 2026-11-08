@@ -261,6 +261,10 @@ class Engine:
         """Replace the Edge.Cuts shapes with a (rounded) rectangle. ``{"bbox": [x, y, w, h]}``."""
         return self.call("set_outline", board, width=width, height=height, x=x, y=y, corner_radius=corner_radius)
 
+    def add_cutout(self, board: str | os.PathLike[str], x: float, y: float,
+                   diameter: float) -> dict:
+        return self.call("add_cutout", board, x=x, y=y, diameter=diameter)
+
     def add_keepout(self, board: str | os.PathLike[str], polygon: Sequence[Sequence[float]],
                     layers: Sequence[str] | None = None, no_tracks: bool = True,
                     no_vias: bool = True, no_pours: bool = True,

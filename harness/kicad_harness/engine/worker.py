@@ -924,6 +924,26 @@ def add_zone(board, net, layer, polygon=None, clearance=0.3, min_width=0.25, mar
 
 
 @rpc
+def add_cutout(board, x, y, diameter):
+    """Add a circular cutout (mounting hole, slot end) to Edge.Cuts at (x, y)."""
+    x, y = _num(x, "x"), _num(y, "y")
+    diameter = _num(diameter, "diameter", positive=True)
+
+    def edit(b):
+        width = b.GetDesignSettings().GetLineThickness(pcbnew.Edge_Cuts)
+        circle = pcbnew.PCB_SHAPE(b)
+        circle.SetShape(pcbnew.SHAPE_T_CIRCLE)
+        circle.SetLayer(pcbnew.Edge_Cuts)
+        circle.SetCenter(_vec(x, y))
+        circle.SetEnd(_vec(x + diameter / 2, y))
+        circle.SetWidth(width)
+        b.Add(circle)
+        return {"uuid": circle.m_Uuid.AsString(), "diameter": diameter}
+
+    return _edit(board, edit)
+
+
+@rpc
 def add_keepout(board, polygon, layers=None, no_tracks=True, no_vias=True, no_pours=True,
                 no_pads=False):
     """Add a rule-area keepout: no tracks/vias/pours (optionally no pads) inside the polygon."""

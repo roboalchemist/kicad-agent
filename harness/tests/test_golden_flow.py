@@ -126,7 +126,11 @@ async def test_place_test_points_keeps_parity(services, new_project) -> None:
     agent = build_agent()
     with agent.override(model=script.model()):
         result = await agent.run("add a ground test point", deps=deps_for(services, name))
-    assert result.output == "done"
+    from pydantic_ai.messages import ToolReturnPart
+
+    debug = [(p.tool_name, str(p.content)[:300]) for m in result.all_messages()
+             for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)]
+    assert result.output == "done", debug
 
     from kicad_harness.engine.schematic import Schematic
 
