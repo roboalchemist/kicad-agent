@@ -782,6 +782,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         defer_model_check=True,
     )
 
+
     @agent.instructions
     def session_context(ctx: RunContext[HarnessDeps]) -> str:
         st = ctx.deps.state
@@ -808,6 +809,10 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 "Goal loop is ON: keep inspecting, editing and checking until every criterion passes. "
                 "You will be sent back to work if you stop early."
             )
+        from . import tool_catalog
+
+        lines.append("")
+        lines.append(tool_catalog.phase_instructions(phase))
         if st.supervised:
             lines.append("Supervised mode is ON: destructive tools pause for the user's approval.")
         if st.selection:
@@ -1912,6 +1917,22 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             + goals.failing_summary(evaluation)
             + ". Keep working (inspect, edit, check) and only finish when check reports every criterion passing."
         )
+
+    # The Settings catalogue's one-line "when to use it" is part of the tool contract, not just
+    # documentation: append it to the description the model receives. Must run after all tools
+    # are registered (the decorators below the Agent(...) constructor add them).
+    from . import tool_catalog as _catalog
+
+    for name, tool in agent._function_toolset.tools.items():
+        guidance = _catalog.tool_guidance(name)
+        if guidance and guidance not in (tool.description or ""):
+            merged = f"{tool.description or ''}\n\nWhen to use: {guidance}".strip()
+            try:
+                tool.description = merged
+                if tool.function_schema is not None:
+                    tool.function_schema.description = merged
+            except Exception:
+                pass
 
     return agent
 

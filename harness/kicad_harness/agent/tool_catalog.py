@@ -175,3 +175,24 @@ def settings_payload(descriptions: dict[str, str] | None = None, model: str | No
         "workflows": WORKFLOWS,
         "guidance": GUIDANCE,
     }
+
+def phase_instructions(phase: str) -> str:
+    """The workflow + standard for the design phase, ready to put in the run's instructions.
+
+    Sourcing is cross-cutting (it applies while drawing and again when the BOM is audited), so it
+    is always included; the current phase's own workflow follows. This is injected on every step,
+    not just shown in the Settings page, so a run is steered by the same text a human reads.
+    """
+    lines: list[str] = ["Sourcing workflow (applies in every phase):"]
+    for index, step in enumerate(WORKFLOWS["bom"], start=1):
+        lines.append(f"{index}. {step['step']} — {step['detail']}")
+    lines.append(f"Sourcing standard: {GUIDANCE['bom']}")
+
+    key = "board" if phase == "board" else "schematic"
+    lines.append("")
+    lines.append(f"{key.title()} workflow:")
+    for index, step in enumerate(WORKFLOWS[key], start=1):
+        lines.append(f"{index}. {step['step']} — {step['detail']}")
+    lines.append(f"{key.title()} standard: {GUIDANCE[key]}")
+    return "\n".join(lines)
+

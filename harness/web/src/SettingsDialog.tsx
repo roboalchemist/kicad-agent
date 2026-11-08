@@ -58,7 +58,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
           <div>
             <b>Harness settings</b>{" "}
             <span className="muted" data-testid="settings-scope">
-              global · every project
+              global · every project · applied to every run
             </span>
           </div>
           <button className="link" onClick={onClose} data-testid="settings-back">

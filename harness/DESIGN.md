@@ -491,6 +491,16 @@ Back/Forward and reload support), not modals; both work with no project selected
 The UI (`SettingsDialog.tsx`) shows three tabs — Tools (search + level filters, expandable rows),
 Workflow (three columns) and Guidance — and nothing in it is per-project state.
 
+These texts are not just documentation; they are applied to every run:
+
+- `tool_catalog.phase_instructions(phase)` is appended to the agent's per-step instructions
+  (`session_context`), so every model step — including each goal-loop continuation — carries the
+  sourcing workflow/standard plus the current phase's workflow and standard.
+- At build time each tool's description gets its catalogue line appended as
+  `When to use: …`, so the guidance travels with the tool schema the model selects from.
+- The hard stop stays the goal criteria (`[legible]`, ERC, DRC, routing, …): the guidance steers
+  how the agent works; the evaluator decides when it may finish.
+
 ### UI specification (what "done" looks like)
 
 **Header:**

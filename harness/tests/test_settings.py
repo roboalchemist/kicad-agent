@@ -48,3 +48,29 @@ def test_catalogue_does_not_drop_an_unknown_tool() -> None:
     names = {tool["name"] for tool in listed}
     assert "brand_new_tool" in names
     assert "route_schematic" in names  # a known tool, one of the 49
+
+
+def test_phase_instructions_carry_the_workflow_and_standard() -> None:
+    from kicad_harness.agent import tool_catalog
+
+    schematic = tool_catalog.phase_instructions("schematic")
+    assert "Sourcing workflow" in schematic
+    assert "Schematic workflow" in schematic
+    assert "Make it legible" in schematic
+    assert tool_catalog.GUIDANCE["schematic"] in schematic
+
+    board = tool_catalog.phase_instructions("board")
+    assert "Board workflow" in board
+    assert "Set the outline" in board
+    assert tool_catalog.GUIDANCE["board"] in board
+    assert "Schematic workflow" not in board
+
+
+def test_tool_descriptions_inherit_the_catalogue_guidance() -> None:
+    """The model sees the "when to use" line, not only the Settings page."""
+    from kicad_harness.agent.agent import build_agent
+
+    agent = build_agent()
+    tool = agent._function_toolset.tools["route_schematic"]
+    assert "When to use:" in (tool.description or "")
+    assert "ERC-checked" in (tool.function_schema.description or "")
