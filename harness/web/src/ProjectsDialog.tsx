@@ -15,7 +15,7 @@ function ago(seconds?: number | null): string {
   return `${Math.round(delta / 86400)} d ago`;
 }
 
-export function ProjectsDialog({ onClose }: { onClose: () => void }) {
+export function ProjectsPage({ onClose }: { onClose: () => void }) {
   const h = useHarness();
   const [items, setItems] = useState<DesignInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -100,14 +100,16 @@ export function ProjectsDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose} data-testid="projects-dialog">
-      <div className="modal projects-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="projects-head">
-          <b>Projects</b>
-          <button className="link" onClick={onClose}>
-            close
-          </button>
+    <div className="page projects-page" data-testid="projects-page">
+      <div className="page-head">
+        <div>
+          <b>Projects</b> <span className="muted">every design on this harness</span>
         </div>
+        <button className="link" onClick={onClose} data-testid="projects-back">
+          ← back to workspace
+        </button>
+      </div>
+      <div className="page-body projects-page-body">
 
         <div className="projects-list" data-testid="projects-list">
           {(items.length ? items : h.designs ?? []).map((d) => (
@@ -228,20 +230,8 @@ export function ProjectsDialog({ onClose }: { onClose: () => void }) {
               {error.slice(0, 200)}
             </div>
           )}
-        </div>
+      </div>
       </div>
     </div>
-  );
-}
-
-export function ProjectsButton() {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button className="projects-btn" data-testid="projects-open" onClick={() => setOpen(true)} title="All projects">
-        Projects
-      </button>
-      {open && <ProjectsDialog onClose={() => setOpen(false)} />}
-    </>
   );
 }

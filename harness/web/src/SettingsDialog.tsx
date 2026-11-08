@@ -19,7 +19,7 @@ const WORKFLOW_TITLES: Record<string, string> = {
   board: "Board layout",
 };
 
-export function SettingsDialog({ onClose }: { onClose: () => void }) {
+export function SettingsPage({ onClose }: { onClose: () => void }) {
   const [data, setData] = useState<SettingsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("tools");
@@ -53,17 +53,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const levelLabel = (id: string) => data?.levels.find((item) => item.id === id)?.label ?? id;
 
   return (
-    <div className="modal-backdrop" onClick={onClose} data-testid="settings-dialog">
-      <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="settings-head">
+    <div className="page settings-page" data-testid="settings-page">
+        <div className="page-head">
           <div>
             <b>Harness settings</b>{" "}
             <span className="muted" data-testid="settings-scope">
               global · every project
             </span>
           </div>
-          <button className="link" onClick={onClose} data-testid="settings-close">
-            close
+          <button className="link" onClick={onClose} data-testid="settings-back">
+            ← back to workspace
           </button>
         </div>
 
@@ -165,7 +164,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             ))}
           </div>
         )}
-      </div>
     </div>
   );
 }
@@ -189,19 +187,3 @@ function ToolRow({ tool, levelLabel }: { tool: SettingsTool; levelLabel: string 
   );
 }
 
-export function SettingsButton() {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button
-        className="projects-btn"
-        data-testid="settings-open"
-        onClick={() => setOpen(true)}
-        title="Global harness settings: tools, workflow and guidance"
-      >
-        Settings
-      </button>
-      {open && <SettingsDialog onClose={() => setOpen(false)} />}
-    </>
-  );
-}

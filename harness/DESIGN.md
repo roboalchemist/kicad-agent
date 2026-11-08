@@ -476,8 +476,9 @@ The UI therefore updates live even while a headless CLI run edits the design fro
 
 ### Settings (global, outside a project)
 
-`GET /api/settings` serves the harness reference that is the same for every design, and the
-Settings button in the header opens it even with no project selected:
+`GET /api/settings` serves the harness reference that is the same for every design. The header's
+**Settings** and **Projects** buttons open full pages (`?page=settings`, `?page=projects`, with
+Back/Forward and reload support), not modals; both work with no project selected:
 
 - `tools`: every agent tool with its **level** (`global`, `bom`, `schematic`, `board`), the live
   docstring summary (read from `build_agent()._function_toolset`, so it cannot go stale) and a

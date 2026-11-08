@@ -7,9 +7,11 @@ import { AGENT_ID } from "./agent.ts";
 import { api } from "./api.ts";
 import { BoardViewer } from "./BoardViewer.tsx";
 import { BomTable } from "./BomTable.tsx";
+import { ProjectsPage } from "./ProjectsDialog.tsx";
+import { SettingsPage } from "./SettingsDialog.tsx";
 import { toolCallRenderers } from "./ToolCalls.tsx";
 import { SchematicViewer } from "./SchematicViewer.tsx";
-import { Header } from "./Header.tsx";
+import { Header, type Page } from "./Header.tsx";
 import { asDesignState, useHarnessTools } from "./tools.tsx";
 import {
   focusOnBoard,
@@ -92,6 +94,11 @@ function rememberSection(section: Section) {
   window.history.pushState(null, "", url);
 }
 
+function pageFromUrl(): Page {
+  const value = new URL(window.location.href).searchParams.get("page");
+  return value === "projects" || value === "settings" ? value : "workspace";
+}
+
 function sectionFromStorage(): Section | null {
   const value = localStorage.getItem("harness.section");
   return isSection(value) ? value : null;
@@ -105,6 +112,21 @@ function Harness({ threadId, errors }: { threadId: string; errors: string[] }) {
   });
   const { copilotkit } = useCopilotKit();
   const [tab, setTab] = useState<TabId>("agent");
+  const [page, setPage] = useState<Page>(() => pageFromUrl());
+
+  const navigate = useCallback((next: Page) => {
+    const url = new URL(window.location.href);
+    if (next === "workspace") url.searchParams.delete("page");
+    else url.searchParams.set("page", next);
+    window.history.pushState(null, "", url);
+    setPage(next);
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => setPage(pageFromUrl());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   // Default follows the project's phase until the user picks a section explicitly; a `?tab=`
   // link wins over the remembered choice so a shared URL opens the tab it names.
   const [section, setSection] = useState<Section | null>(() => sectionFromUrl() ?? sectionFromStorage());
@@ -296,7 +318,17 @@ function Harness({ threadId, errors }: { threadId: string; errors: string[] }) {
 
   return (
     <div className="harness">
-      <Header onToggleLoop={toggleLoop} onToggleSupervised={toggleSupervised} />
+      <Header
+        page={page}
+        onNavigate={navigate}
+        onToggleLoop={toggleLoop}
+        onToggleSupervised={toggleSupervised}
+      />
+      {page === "projects" ? (
+        <ProjectsPage onClose={() => navigate("workspace")} />
+      ) : page === "settings" ? (
+        <SettingsPage onClose={() => navigate("workspace")} />
+      ) : (
       <div className="harness-body">
         <section className="board-panel">
           <div className="section-tabs" data-testid="section-tabs">
@@ -375,6 +407,7 @@ function Harness({ threadId, errors }: { threadId: string; errors: string[] }) {
           </div>
         </section>
       </div>
+      )}
       {errors.length > 0 && (
         <div className="harness-errors" data-testid="harness-errors">
           {errors.map((error, i) => (

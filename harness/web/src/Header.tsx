@@ -8,11 +8,17 @@ import { initStore, selectDesign, setStore, useHarness } from "./store.ts";
 import { api } from "./api.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter } from "./ContextMeter.tsx";
-import { ProjectsButton } from "./ProjectsDialog.tsx";
-import { SettingsButton } from "./SettingsDialog.tsx";
+
 import { getTheme, toggleTheme } from "./theme.ts";
 
-export function Header({ onToggleLoop, onToggleSupervised }: { onToggleLoop: (v: boolean) => void; onToggleSupervised: (v: boolean) => void }) {
+export type Page = "workspace" | "projects" | "settings";
+
+export function Header({ page, onNavigate, onToggleLoop, onToggleSupervised }: {
+  page: Page;
+  onNavigate: (page: Page) => void;
+  onToggleLoop: (v: boolean) => void;
+  onToggleSupervised: (v: boolean) => void;
+}) {
   const h = useHarness();
   const { agent } = useAgent({ agentId: AGENT_ID });
   const { copilotkit } = useCopilotKit();
@@ -43,8 +49,22 @@ export function Header({ onToggleLoop, onToggleSupervised }: { onToggleLoop: (v:
             </option>
           ))}
         </select>
-        <ProjectsButton />
-        <SettingsButton />
+        <button
+          className={`projects-btn ${page === "projects" ? "active" : ""}`}
+          data-testid="projects-open"
+          onClick={() => onNavigate("projects")}
+          title="Every project on this harness"
+        >
+          Projects
+        </button>
+        <button
+          className={`projects-btn ${page === "settings" ? "active" : ""}`}
+          data-testid="settings-open"
+          onClick={() => onNavigate("settings")}
+          title="Global harness settings: tools, workflow and guidance"
+        >
+          Settings
+        </button>
         <span className="muted" data-testid="branch-head">
           {h.design?.branch ?? "—"} @ {(h.design?.head ?? "").slice(0, 8) || "—"}
         </span>
