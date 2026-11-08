@@ -138,3 +138,26 @@ were merged. The agent surface is now **36 tools**, all named `<verb>_<object>`:
 Still open: the capability gaps in section 4 (net classes, stackup, differential pairs,
 outline import, manufacturing export, BOM lifecycle, silkscreen automation, test points,
 thermal), plus knowledge search.
+
+
+## Implementation status (after `a0fb875`)
+
+| Recommendation | Status |
+|---|---|
+| Net classes + stackup | **done** — `set_net_class`, `set_stackup`, `add_track` uses the class width, `check` reports width/stackup violations |
+| Manufacturing export + gate | **partial** — `export_manufacturing` writes Gerbers/drill/P&P/BOM/manifest and `check` reports presence/staleness; no goal criterion yet |
+| Generator fix | **covered by tests** — scripted end-to-end draw test passes; no dedicated regression on the skidl cache |
+| Connection retry | **done** — `stream_with_token_retry` retries provider connection errors |
+| Diff pairs / length match | **partial** — `route_diff_pair` (parallel tracks), `match_length` (report); no serpentine adjustment, no impedance check |
+| Mechanical outline | **partial** — `set_board_outline(points=...)` polygon; no DXF/STEP parser, no keepout zones |
+| Silkscreen automation | **done** — `place_silkscreen` collision-aware reference placement |
+| Test points | **not done** — needs schematic+board synchronisation so parity/BOM stay valid |
+| Thermal vias | **done** — `add_thermal_vias` |
+| BOM lifecycle | **partial** — `set_bom_alternates` + alternates column in the BOM; no MSL/lead-time fields |
+| Layout metrics | **done** — owner distance, alignment, wire length, crossings, utilisation in `check`; rule cited in findings |
+| Netlist/BOM diff | **done** — `diff_versions` |
+| Uniform tool contract | **not done** |
+| Playbook once per run | **done** |
+| Knowledge sync + search | **done** — drift test + `read_reference(query=...)` |
+| Golden regression suite | **partial** — 318 tests, no dedicated pi-relay fixture |
+| UI tool examples / project management | **not done** |
