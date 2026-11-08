@@ -663,6 +663,9 @@ Phases:
 - A design starts in the SCHEMATIC phase: there is no board yet, only `schematic.kicad_sch`. Draw the circuit, keep ERC clean (erc_errors/erc_warnings criteria), then call `start_board_layout`. That creates the board, places the footprints from KiCad's own netlist and assigns their nets, so layout starts electrically correct. After it, you are in the BOARD phase and move parts and route.
 - Prefer `generate_schematic_skidl` to draw a whole design from a parts and nets list; use the individual symbol and wiring tools to fix or extend it. Every part needs a real KiCad footprint (`Library:Footprint`) or it cannot be placed on the board.
 - A schematic is not finished when it is merely ERC-clean: it must be readable. Call `check_schematic_layout` after drawing or editing; while it reports a score above 0, call `tidy_schematic` and check again. The [legible] goal criterion is measured from the drawing itself and is mandatory, so the loop will not end until it passes.
+- Arrange by circuit, not by reference: a part belongs beside the part it serves. Series/pull-up resistors sit by the input they protect, decoupling capacitors by the IC they decouple, and each power symbol at the pin it names. `tidy_schematic` puts 2-pin passives beside their owner; `check_schematic_layout` lists the remaining offenders under `findings` (a passive far from its owner, a point-to-point net left as two distant labels, a power symbol whose value contradicts its net). Act on those findings rather than accepting them.
+- `findings` also surfaces broken power symbols (e.g. a GND symbol wired to +5V). Fix the netlist or the symbol first: no placement can put a ground next to a part while the symbol names a different net.
+- Once the parts are close, call `route_schematic` to draw direct wires for point-to-point nets instead of leaving two labels. It keeps the net names and rolls back any wire that would change connectivity; if it skips a net, the two parts are too far apart or a wire would cross a pin — move them closer and try again.
 
 Part sourcing (do this before choosing parts):
 - Boards are assembled by JLCPCB, so a part is only real if JLCPCB stocks it. Use `find_parts` to search their catalogue: pass `query` for a part number (e.g. "NE555" finds NE555DR) or `category` to browse by type (e.g. "LED", "Relays"). It reports stock, unit price, and whether a part is `basic` (no assembly fee) or `extended` (a per-part reel fee). Prefer basic parts with large stock unless the user asks otherwise. The catalogue's description text is empty, so searching for words like "red LED" will not work — browse the category instead.
@@ -1272,6 +1275,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
         try:
             layout_report = layout_mod.analyze(doc)
+            layout_report["findings"] = layout_mod.findings(doc)
         except Exception as exc:  # measurement must not hide the schematic itself
             layout_report = {"ok": False, "score": None, "error": _engine_error_text(exc)}
         summary = {
@@ -1481,6 +1485,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         try:
             doc = await asyncio.to_thread(_schematic, ctx)
             report = await asyncio.to_thread(layout_mod.analyze, doc)
+            report["findings"] = await asyncio.to_thread(layout_mod.findings, doc)
         except Exception as exc:
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         await _sync_schematic_state(ctx)
@@ -1488,15 +1493,56 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool(sequential=True)
     async def tidy_schematic(ctx: RunContext[HarnessDeps], paper: str | None = None) -> ToolReturn:
-        """Relayout the schematic into a legible grid: every symbol on a grid, one short stub and
-        one net label per pin, no long wires and no crossings. Connectivity is preserved (labels
-        with the same net name merge), so the netlist does not change. Returns the before/after
-        measurements; call check_schematic_layout afterwards to confirm the score is 0."""
+        """Relayout the schematic: symbols in circuit-flow order, each 2-pin passive beside the
+        part it serves (pull-ups by their input, decoupling caps by their IC), one short stub and
+        net label per pin. Connectivity is preserved (labels with the same net name merge), so the
+        netlist does not change. Call check_schematic_layout afterwards, then route_schematic."""
         from kicad_harness.engine import layout as layout_mod
 
         return await _schematic_edit(
             ctx, "tidy_schematic", "Tidy the schematic layout",
             lambda doc: layout_mod.tidy(doc, paper=paper),
+        )
+
+    @agent.tool(sequential=True)
+    async def route_schematic(ctx: RunContext[HarnessDeps], max_mm: float = 80) -> ToolReturn:
+        """Draw direct wires between the two pins of point-to-point nets (<= max_mm apart).
+
+        Labels stay in place, so net names are unchanged; the wire only makes the connection
+        visible. Each wire is checked against the pin partition and the whole edit is rejected
+        (and rolled back) if ERC errors increase. Returns which nets were wired and why the
+        others were skipped — move those parts closer with add_symbol/move or leave the label."""
+        from kicad_harness.engine import kicad_cli
+        from kicad_harness.engine import layout as layout_mod
+
+        ws = _ws(ctx)
+        svc = ctx.deps.services
+        original = ws.schematic_path.read_text(encoding="utf-8")
+        try:
+            erc_before = kicad_cli.erc(ws.schematic_path, config=svc.config)["counts"].get("errors", 0)
+        except Exception:
+            erc_before = None
+        try:
+            doc = await asyncio.to_thread(_schematic, ctx)
+            report = await asyncio.to_thread(lambda: layout_mod.route(doc, max_mm=max_mm))
+            await asyncio.to_thread(doc.save)
+        except Exception as exc:
+            ws.schematic_path.write_text(original, encoding="utf-8")
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        try:
+            erc_after = kicad_cli.erc(ws.schematic_path, config=svc.config)["counts"].get("errors", 0)
+        except Exception:
+            erc_after = None
+        if erc_before is not None and erc_after is not None and erc_after > erc_before:
+            ws.schematic_path.write_text(original, encoding="utf-8")
+            return ToolReturn(return_value={
+                "ok": False,
+                "error": "the new wires raised ERC errors, so the edit was rolled back",
+                "erc_before": erc_before, "erc_after": erc_after, **report,
+            })
+        return await _schematic_commit(
+            ctx, "route_schematic",
+            f"Wire {len(report['wired'])} point-to-point nets", report,
         )
 
     @agent.tool

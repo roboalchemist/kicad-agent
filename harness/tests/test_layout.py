@@ -36,6 +36,13 @@ def two_pin(libraries) -> str:
     return symbol.lib_id
 
 
+@pytest.fixture(scope="module")
+def many_pin(libraries) -> str:
+    name = next(iter(libraries))
+    symbol = next(s for s in libraries[name].values() if len(s.pins) >= 3)
+    return symbol.lib_id
+
+
 def _messy(tmp_path: Path, libraries, two_pin: str) -> sch.Schematic:
     """Two symbols on top of each other, a crossed pair of wires, a dangling end, a label pile."""
     doc = sch.Schematic.create(tmp_path / "messy.kicad_sch", libraries=libraries)
@@ -120,3 +127,52 @@ def test_an_agent_cannot_relax_the_legibility_floor() -> None:
     floor = goal.mandatory_criteria(authored, {"schematic_layout": {"score": 0}})
     legible = next(c for c in floor if c["id"] == "legible")
     assert legible["max"] == 0
+
+
+def _power_library() -> dict[str, dict[str, sch.LibrarySymbol]]:
+    path = Path("/usr/share/kicad/symbols/power.kicad_sym")
+    if not path.is_file():
+        pytest.skip("no KiCad power library here")
+    return {"power": sch.read_library(path)}
+
+
+def test_findings_name_a_power_symbol_that_contradicts_its_net(tmp_path: Path, libraries, two_pin: str) -> None:
+    """The placer must not decide between a symbol's value and its net: it reports the conflict."""
+    extra = _power_library()
+    merged = {**libraries, **extra}
+    doc = sch.Schematic.create(tmp_path / "power.kicad_sch", libraries=merged)
+    doc.add_symbol(two_pin, "R1", 100.0, 100.0)
+    doc.add_symbol("power:GND", "#PWR01", 130.0, 100.0)
+    doc.connect_pins(("#PWR01", "1"), ("R1", "1"), net="+5V")
+    messages = layout.findings(doc)
+    assert any("#PWR01" in message and "+5V" in message for message in messages), messages
+
+
+def test_tidy_puts_a_passive_beside_the_part_it_serves(tmp_path: Path, libraries, two_pin, many_pin) -> None:
+    """A pull-up or decoupling part belongs next to its owner, not in a column of its own."""
+    doc = sch.Schematic.create(tmp_path / "owner.kicad_sch", libraries=libraries)
+    doc.add_symbol(many_pin, "U1", 100.0, 100.0)        # many-pin anchor
+    doc.add_symbol(two_pin, "R1", 240.0, 240.0)         # far away
+    doc.connect_pins(("U1", "1"), ("R1", "1"), net="SIG")
+    layout.tidy(doc)
+    boxes = layout.symbol_boxes(doc)
+    def centre(ref):
+        box = boxes[ref]
+        return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+    import math
+    assert math.dist(centre("U1"), centre("R1")) < 30, "the passive was not placed with its owner"
+
+
+def test_router_wires_a_point_to_point_net_and_keeps_the_netlist(
+    tmp_path: Path, libraries, two_pin: str
+) -> None:
+    doc = sch.Schematic.create(tmp_path / "route.kicad_sch", libraries=libraries)
+    doc.add_symbol(two_pin, "R1", 60.0, 60.0)
+    doc.add_symbol(two_pin, "R2", 90.0, 60.0)
+    doc.connect_pins(("R1", "1"), ("R2", "1"), net="MID")
+    layout.tidy(doc)
+    before = layout._partitions(doc)
+    report = layout.route(doc)
+    assert report["partitions_ok"] is True
+    assert layout._partitions(doc) == before
+    assert "MID" in report["wired"], report

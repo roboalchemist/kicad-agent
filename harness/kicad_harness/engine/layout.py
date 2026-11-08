@@ -509,6 +509,107 @@ def _order_layers(depth: dict[str, int], adj: dict[str, set[str]]) -> list[list[
     return ordered
 
 
+def _pin_sets(doc: Schematic, pin_net: dict[tuple[str, str], str]) -> dict[str, list[tuple[str, str | None]]]:
+    """``{ref: [(pin, net)]}`` for every non-power symbol on the sheet."""
+    out: dict[str, list[tuple[str, str | None]]] = {}
+    for placement in doc.placements():
+        if placement.reference.startswith("#"):
+            continue
+        symbol = doc.lookup(placement.lib_id)
+        if symbol is None:
+            continue
+        out[placement.reference] = [
+            (number, pin_net.get((placement.reference, number))) for number in symbol.pins
+        ]
+    return out
+
+
+def _owners(doc: Schematic, pin_net: dict[tuple[str, str], str]) -> tuple[dict[str, str], set[str]]:
+    """``{2-pin passive: owning anchor}`` plus the set of rail nets.
+
+    A pull-up or a decoupling capacitor belongs beside the part it serves, not in a column of its
+    own. The owner is the part the passive shares a signal with (preferring an IC to a
+    connector); a passive that only touches rails goes with the smallest IC on those rails.
+    """
+    pin_sets = _pin_sets(doc, pin_net)
+    nets = doc.nets()
+    net_refs = {name: {m["ref"] for m in members if not m["ref"].startswith("#")}
+                for name, members in nets.items()}
+    rails = {name for name, refs in net_refs.items()
+             if _is_rail(name, len(refs), len(pin_sets))}
+    nets_of: dict[str, set[str]] = {ref: set() for ref in pin_sets}
+    for name, refs in net_refs.items():
+        for ref in refs:
+            nets_of.setdefault(ref, set()).add(name)
+
+    anchors = [ref for ref in pin_sets if len(pin_sets[ref]) != 2]
+    owner_of: dict[str, str] = {}
+    for passive, pins in pin_sets.items():
+        if len(pins) != 2:
+            continue
+        own_nets = [name for _, name in pins if name]
+        signal_nets = [name for name in own_nets if name not in rails]
+        if signal_nets:
+            candidates = [ref for ref in anchors
+                          if any(name in nets_of.get(ref, ()) for name in signal_nets)]
+        else:
+            candidates = [ref for ref in anchors
+                          if all(name in nets_of.get(ref, ()) for name in own_nets)]
+            if not candidates:
+                candidates = [ref for ref in anchors
+                              if any(name in nets_of.get(ref, ()) for name in own_nets)]
+        if not candidates:
+            continue
+        owner_of[passive] = min(
+            candidates,
+            key=lambda ref: ({"U": 0, "Q": 1, "K": 2, "S": 3, "D": 4, "L": 5, "J": 6}
+                             .get(ref[:1], 7), len(pin_sets[ref]), _natural_key(ref)),
+        )
+    return owner_of, rails
+
+
+def _pin_outward(doc: Schematic, ref: str, number: str) -> tuple[float, float]:
+    """Sheet direction in which a pin leaves its symbol (where a wire should leave it)."""
+    placement = doc._placement(ref)
+    symbol = doc.lookup(placement.lib_id) if placement else None
+    pin = symbol.pins.get(number) if symbol else None
+    if pin is None or placement is None:
+        return (1.0, 0.0)
+    angle = math.radians(pin.angle)
+    local_x, local_y = -math.cos(angle), math.sin(angle)
+    theta = math.radians(placement.rotation)
+    return (local_x * math.cos(theta) - local_y * math.sin(theta),
+            local_x * math.sin(theta) + local_y * math.cos(theta))
+
+
+def _route_between(a: tuple[float, float], a_out: tuple[float, float],
+                   b: tuple[float, float], b_out: tuple[float, float],
+                   step: float) -> list[tuple[float, float]]:
+    """Route two pins that leave their symbols along ``a_out``/``b_out``.
+
+    The bend happens in the free channel between the symbols, so a vertical leg cannot run along
+    the target's other pins (which would join their nets).
+    """
+    a1 = (a[0] + a_out[0] * step, a[1] + a_out[1] * step)
+    b1 = (b[0] + b_out[0] * step, b[1] + b_out[1] * step)
+    points = [a, a1]
+    if abs(a_out[0]) > 0.5 and abs(b_out[0]) > 0.5:
+        mid = (a1[0] + b1[0]) / 2
+        points += [(mid, a1[1]), (mid, b1[1])]
+    elif abs(a_out[1]) > 0.5 and abs(b_out[1]) > 0.5:
+        mid = (a1[1] + b1[1]) / 2
+        points += [(a1[0], mid), (b1[0], mid)]
+    else:
+        points += [(b1[0], a1[1])]
+    points += [b1, b]
+    return points
+
+
+def _partitions(doc: Schematic) -> set[frozenset[tuple[str, str]]]:
+    return {frozenset((m["ref"], m["pin"]) for m in members)
+            for members in doc.nets().values()}
+
+
 def _lay_out(
     doc: Schematic,
     pin_net: dict[tuple[str, str], str],
@@ -587,6 +688,25 @@ def _lay_out(
     columns.extend(supply_columns)
     if main:
         columns.extend(layer_columns(main))
+
+    # Two-pin passives move into their owner's column, directly after it, so a pull-up sits by
+    # the input it protects and a decoupling capacitor by the IC it decouples. Their labels still
+    # carry the connection; the router can then wire them because they are adjacent.
+    owner_of, _rails = _owners(doc, pin_net)
+    passives = set(owner_of)
+    if passives:
+        for column in columns:
+            column[:] = [ref for ref in column if ref not in passives]
+        for column in columns:
+            expanded: list[str] = []
+            for ref in column:
+                expanded.append(ref)
+                expanded.extend(sorted((passive for passive, owner in owner_of.items()
+                                        if owner == ref), key=_natural_key))
+            column[:] = expanded
+        placed_refs = {ref for column in columns for ref in column}
+        for passive in sorted(passives - placed_refs, key=_natural_key):
+            (columns[0] if columns else columns.append([])) and columns[0].append(passive)
 
     total_cols = len(columns)
 
@@ -753,3 +873,96 @@ def _lay_out(
         "stubs": stubs,
         "labels": labels,
     }
+
+def findings(doc: Schematic) -> list[str]:
+    """Actionable arrangement problems, in the agent's language.
+
+    These are the things a placer cannot decide for itself: a power symbol that contradicts its
+    net, a passive that belongs to a part it is nowhere near, a point-to-point net left as two
+    labels at opposite ends of the sheet.
+    """
+    pin_net = _alias_nets(doc)
+    owner_of, _rails = _owners(doc, pin_net)
+    boxes = symbol_boxes(doc)
+    out: list[str] = []
+
+    # Power symbols whose value and net disagree. No placer can honour both.
+    for placement in doc.placements():
+        if not placement.reference.startswith("#"):
+            continue
+        symbol = doc.lookup(placement.lib_id)
+        if symbol is None or not symbol.pins:
+            continue
+        number = next(iter(symbol.pins))
+        net = doc.pin_net(placement, number) or placement.value
+        if (placement.value != "PWR_FLAG" and net
+                and net.strip().upper() != placement.value.strip().upper()):
+            out.append(
+                f"{placement.reference} is a {placement.value} symbol wired to net {net}: "
+                "fix the symbol or the net before grounds can be placed at their part"
+            )
+
+    def centre(ref: str) -> tuple[float, float]:
+        box = boxes[ref]
+        return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+    for passive, owner in sorted(owner_of.items(), key=lambda item: _natural_key(item[0])):
+        if passive in boxes and owner in boxes:
+            distance = math.dist(centre(passive), centre(owner))
+            if distance > 30:
+                out.append(f"{passive} is {distance:.0f} mm from {owner}, the part it serves; "
+                           "place them together")
+
+    net_pins: dict[str, list[tuple[str, str]]] = {}
+    for (ref, number), name in pin_net.items():
+        net_pins.setdefault(name, []).append((ref, number))
+    for name, pins in sorted(net_pins.items()):
+        if len(pins) != 2:
+            continue
+        (ref_a, pin_a), (ref_b, pin_b) = pins
+        a = doc.pin_position(doc._placement(ref_a), pin_a)
+        b = doc.pin_position(doc._placement(ref_b), pin_b)
+        if a and b and math.dist(a, b) > 30:
+            out.append(f"net {name} joins {ref_a}.{pin_a} and {ref_b}.{pin_b} "
+                       f"{math.dist(a, b):.0f} mm apart; route_schematic or place them together")
+    return out[:40]
+
+
+def route(doc: Schematic, *, max_mm: float = 80.0) -> dict[str, Any]:
+    """Draw direct wires for point-to-point nets, refusing any wire that changes connectivity.
+
+    Labels stay where they are, so net names are preserved; the wire only makes the connection
+    visible. Each candidate is added, the pin partition recomputed, and the wire removed again if
+    two nets merged or a net split. The caller should still run ERC: the engine's partition model
+    is necessary but not sufficient (KiCad's power-symbol rules are stricter).
+    """
+    pin_net = _alias_nets(doc)
+    net_pins: dict[str, list[tuple[str, str]]] = {}
+    for (ref, number), name in pin_net.items():
+        net_pins.setdefault(name, []).append((ref, number))
+    target = _partitions(doc)
+    wired: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for name, pins in sorted(net_pins.items()):
+        if len(pins) != 2:
+            continue
+        (ref_a, pin_a), (ref_b, pin_b) = pins
+        a = doc.pin_position(doc._placement(ref_a), pin_a)
+        b = doc.pin_position(doc._placement(ref_b), pin_b)
+        if a is None or b is None:
+            continue
+        if math.dist(a, b) > max_mm:
+            skipped.append({"net": name, "reason": f"pins are {math.dist(a, b):.0f} mm apart"})
+            continue
+        points = _route_between(a, _pin_outward(doc, ref_a, pin_a),
+                                b, _pin_outward(doc, ref_b, pin_b), STUB)
+        added = doc.add_wire(points)
+        if _partitions(doc) != target:
+            doc.tree[:] = [child for child in doc.tree
+                           if not any(child is node for node in added)]
+            skipped.append({"net": name, "reason": "the wire would have joined another net"})
+            continue
+        wired.append(name)
+    return {"wired": wired, "skipped": skipped,
+            "partitions_ok": _partitions(doc) == target}
+
