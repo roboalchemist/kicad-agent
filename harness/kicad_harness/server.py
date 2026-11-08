@@ -670,6 +670,52 @@ def create_app() -> FastAPI:
         out.sort(key=lambda d: d.get("updated_at") or 0, reverse=True)
         return out
 
+    @app.post("/api/designs/{design}/rename")
+    async def rename_design(request: Request, design: str, body: dict = Body(...)):
+        """Rename a project directory and repoint its history/reviews/runs at the new name."""
+        import os as _os
+
+        from kicad_harness.store.workspace import Workspace
+
+        svc = _svc(request)
+        ws = _workspace(svc, design)
+        new = str(body.get("name") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", new or ""):
+            raise HTTPException(400, "name must be letters, digits, _ . -")
+        if new == design:
+            return {"name": design}
+        if Workspace.exists(svc.config, new):
+            raise HTTPException(409, f"design {new!r} exists")
+        if [r for r in svc.store.runs.list(design) if r.get("status") == "running"]:
+            raise HTTPException(409, "stop the run before renaming")
+        target = Path(svc.config.workspaces) / new
+        await asyncio.to_thread(_os.rename, ws.path, target)
+        with svc.store.lock:
+            svc.store.conn.execute("BEGIN IMMEDIATE")
+            for table in ("threads", "runs", "version_meta", "agent_history", "steering"):
+                svc.store.conn.execute(f"UPDATE {table} SET design = ? WHERE design = ?", (new, design))
+            svc.store.conn.execute("COMMIT")
+        return {"name": new, "directory": str(target)}
+
+    @app.delete("/api/designs/{design}")
+    async def delete_design(request: Request, design: str, confirm: bool = False):
+        """Delete a project and its history. Requires `?confirm=1`."""
+        import shutil as _shutil
+
+        svc = _svc(request)
+        ws = _workspace(svc, design)
+        if not confirm:
+            raise HTTPException(400, "pass ?confirm=1 to delete a project")
+        if [r for r in svc.store.runs.list(design) if r.get("status") == "running"]:
+            raise HTTPException(409, "stop the run before deleting")
+        await asyncio.to_thread(_shutil.rmtree, ws.path)
+        with svc.store.lock:
+            svc.store.conn.execute("BEGIN IMMEDIATE")
+            for table in ("threads", "runs", "version_meta", "agent_history", "steering"):
+                svc.store.conn.execute(f"DELETE FROM {table} WHERE design = ?", (design,))
+            svc.store.conn.execute("COMMIT")
+        return {"deleted": design}
+
     @app.post("/api/designs")
     async def create_design(request: Request, body: dict = Body(...)):
         from kicad_harness.store.workspace import Workspace

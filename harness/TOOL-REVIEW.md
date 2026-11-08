@@ -149,7 +149,7 @@ thermal), plus knowledge search.
 | Generator fix | **covered by tests** — scripted end-to-end draw test passes; no dedicated regression on the skidl cache |
 | Connection retry | **done** — `stream_with_token_retry` retries provider connection errors |
 | Diff pairs / length match | **partial** — `route_diff_pair` (parallel tracks), `match_length` (report); no serpentine adjustment, no impedance check |
-| Mechanical outline | **done (except STEP)** — polygon outline, `import_outline` DXF (LWPOLYLINE/LINE) and `add_keepout` rule areas |
+| Mechanical outline | **done except STEP** — polygon outline, `import_outline` DXF (LWPOLYLINE/LINE) and `add_keepout` rule areas |
 | Silkscreen automation | **done** — `place_silkscreen` collision-aware reference placement |
 | Test points | **done** — `place_test_points` adds a symbol and footprint with the same ref; engine/symbol test |
 | Thermal vias | **done** — `add_thermal_vias` |
@@ -160,4 +160,4 @@ thermal), plus knowledge search.
 | Playbook once per run | **done** |
 | Knowledge sync + search | **done** — drift test + `read_reference(query=...)` |
 | Golden regression suite | **partial** — conditional pi-relay test (score 0, ERC 0) + 322 tests |
-| UI tool examples / project management | **partial** — examples and failure modes on the tool page; rename/delete not done |
+| UI tool examples / project management | **done** — examples + failure modes on the tool page; projects page rename/delete with confirmation |

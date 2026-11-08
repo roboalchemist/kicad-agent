@@ -1266,17 +1266,34 @@ button.stop-btn {
 }
 .project-card {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  text-align: left;
+  flex-direction: column;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
   border-radius: 8px;
   padding: 8px;
-  cursor: pointer;
   font: inherit;
 }
+.project-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.project-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 4px 2px 0;
+  font-size: 10.5px;
+}
+.link.danger { color: #c0392b; }
 .project-card:hover {
   background: var(--surface-3);
 }

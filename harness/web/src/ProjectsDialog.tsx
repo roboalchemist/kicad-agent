@@ -36,6 +36,30 @@ export function ProjectsPage({ onClose }: { onClose: () => void }) {
     void refreshDesigns();
   }, []);
 
+  const rename = async (current: string) => {
+    const next = window.prompt("New project name", current)?.trim();
+    if (!next || next === current) return;
+    try {
+      await api.renameDesign(current, next);
+      if (h.designName === current) await selectDesign(next);
+      await load();
+      await refreshDesigns();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const remove = async (current: string) => {
+    if (!window.confirm(`Delete project "${current}" and its history?`)) return;
+    try {
+      await api.deleteDesign(current);
+      await load();
+      await refreshDesigns();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const pickFile = async (file: File | null) => {
     if (!file) {
       setText(null);
@@ -113,33 +137,45 @@ export function ProjectsPage({ onClose }: { onClose: () => void }) {
 
         <div className="projects-list" data-testid="projects-list">
           {(items.length ? items : h.designs ?? []).map((d) => (
-            <button
+            <div
               key={d.name}
               className={`project-card ${d.name === h.designName ? "current" : ""}`}
               data-testid={`project-${d.name}`}
-              onClick={() => {
-                void selectDesign(d.name);
-                onClose();
-              }}
             >
-              {d.thumbnail ? (
-                <img className="project-thumb" src={d.thumbnail} alt={`${d.name} board`} loading="lazy" />
-              ) : (
-                <span className="project-thumb empty" />
-              )}
-              <span className="project-meta">
-                <b>
-                  {d.name}
-                  {d.phase === "schematic" && <span className="badge badge-phase">schematic</span>}
-                </b>
-                <span className="muted">
-                  {d.branch} @ {(d.head ?? "").slice(0, 8) || "—"} · {ago(d.updated_at)}
+              <button
+                className="project-open"
+                onClick={() => {
+                  void selectDesign(d.name);
+                  onClose();
+                }}
+              >
+                {d.thumbnail ? (
+                  <img className="project-thumb" src={d.thumbnail} alt={`${d.name} board`} loading="lazy" />
+                ) : (
+                  <span className="project-thumb empty" />
+                )}
+                <span className="project-meta">
+                  <b>
+                    {d.name}
+                    {d.phase === "schematic" && <span className="badge badge-phase">schematic</span>}
+                  </b>
+                  <span className="muted">
+                    {d.branch} @ {(d.head ?? "").slice(0, 8) || "—"} · {ago(d.updated_at)}
+                  </span>
+                  <span className="project-subject">{d.brief ?? d.latest?.subject ?? "no versions yet"}</span>
+                  {d.goal_summary && <span className="project-goal">{d.goal_summary}</span>}
                 </span>
-                <span className="project-subject">{d.brief ?? d.latest?.subject ?? "no versions yet"}</span>
-                {d.goal_summary && <span className="project-goal">{d.goal_summary}</span>}
-              </span>
-              {d.name === h.designName && <span className="badge badge-ok">current</span>}
-            </button>
+                {d.name === h.designName && <span className="badge badge-ok">current</span>}
+              </button>
+              <div className="project-actions">
+                <button className="link" data-testid={`project-rename-${d.name}`} onClick={() => void rename(d.name)}>
+                  rename
+                </button>
+                <button className="link danger" data-testid={`project-delete-${d.name}`} onClick={() => void remove(d.name)}>
+                  delete
+                </button>
+              </div>
+            </div>
           ))}
         </div>
 

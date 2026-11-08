@@ -83,6 +83,8 @@ export const api = {
   settings: () => get<SettingsResponse>("/api/settings"),
   stopRun: (d: string) => send<{ stopping: boolean }>(`/api/designs/${d}/stop`, "POST", {}),
   setModel: (model: string) => send<{ current: string }>("/api/models", "PUT", { model }),
+  renameDesign: (d: string, name: string) => send<{ name: string }>(`/api/designs/${d}/rename`, "POST", { name }),
+  deleteDesign: (d: string) => send<{ deleted: string }>(`/api/designs/${d}?confirm=1`, "DELETE", undefined),
   versionSummary: (d: string, sha: string) => get<VersionSummary>(`/api/designs/${d}/versions/${sha}/summary`),
   design: (d: string) => get<DesignDetail>(`/api/designs/${d}`),
   index: (d: string, rev: string) => get<PickIndex>(`/api/designs/${d}/rev/${rev}/index`),
