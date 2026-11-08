@@ -508,10 +508,20 @@ export interface SettingsWorkflowStep {
   detail: string;
 }
 
+export interface SettingsReference {
+  id: string;
+  title: string;
+  source: string;
+  headings: string[];
+  kind: "rule" | "reference";
+}
+
 export interface SettingsResponse {
   model: string | null;
   levels: { id: string; label: string }[];
   tools: SettingsTool[];
   workflows: Record<string, SettingsWorkflowStep[]>;
   guidance: Record<string, string>;
+  playbooks: Record<string, string>;
+  references: SettingsReference[];
 }

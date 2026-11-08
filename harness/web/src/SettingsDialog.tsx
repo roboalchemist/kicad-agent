@@ -160,8 +160,27 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
               <section key={phase} className="settings-phase" data-testid={`settings-guidance-${phase}`}>
                 <h4>{WORKFLOW_TITLES[phase]}</h4>
                 <p>{data.guidance[phase]}</p>
+                {data.playbooks[phase] && (
+                  <pre className="settings-playbook" data-testid={`settings-playbook-${phase}`}>
+                    {data.playbooks[phase]}
+                  </pre>
+                )}
               </section>
             ))}
+            <section className="settings-references" data-testid="settings-references">
+              <h4>
+                Reference library <span className="muted">· {data.references.length} documents from .agents</span>
+              </h4>
+              <div className="settings-reference-grid">
+                {data.references.map((ref) => (
+                  <div key={`${ref.kind}-${ref.id}-${ref.source}`} className="settings-reference">
+                    <code>{ref.id}</code>
+                    <span>{ref.title}</span>
+                    <span className="muted">{ref.source}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
         )}
     </div>

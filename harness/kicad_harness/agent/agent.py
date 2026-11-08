@@ -824,6 +824,39 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
     # ------------------------------------------------------------------ inspection
 
     @agent.tool
+    async def read_design_reference(
+        ctx: RunContext[HarnessDeps], topic: str, section: str | None = None
+    ) -> ToolReturn:
+        """Read the harness's PCB design rule or reference for a topic (e.g. "pcb-routing",
+        "placement", "copper-pours", "dfm"). These are the documents the workflow guidance is
+        summarised from; open one when a decision is not obvious. Pass `section` to get only
+        that heading."""
+        from kicad_harness.agent import knowledge
+
+        doc = knowledge.read(topic)
+        if doc is None:
+            return ToolReturn(return_value={
+                "ok": False,
+                "error": f"unknown topic {topic!r}",
+                "topics": knowledge.topic_ids(),
+            })
+        text = doc["text"]
+        if section:
+            wanted = section.strip().lower()
+            chunks = text.split("\n## ")
+            keep = [chunk for chunk in chunks if chunk.split("\n", 1)[0].strip().lower().startswith(wanted)]
+            if keep:
+                text = "## " + keep[0]
+        return ToolReturn(return_value={
+            "ok": True,
+            "topic": doc["id"],
+            "title": doc["title"],
+            "source": doc["source"],
+            "headings": doc["headings"],
+            "text": text[:20000],
+        })
+
+    @agent.tool
     @guarded
     async def design_summary(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
         """Board outline, components (ref, value, footprint, position, side), nets, DRC counts, goal status and open review threads."""

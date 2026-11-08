@@ -30,6 +30,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "list_feedback": ("global", "Read the user's review comments before planning the next edit."),
     "reply_to_thread": ("global", "Answer a review comment; include the reason, not just 'done'."),
     "mark_addressed": ("global", "Mark a review comment handled once the change is committed."),
+    "read_design_reference": ("global", "Pull the full PCB rule/reference for a topic when the decision is not obvious."),
     # -- BOM / sourcing -------------------------------------------------------------------
     "find_parts": ("bom", "Search by part number or category; prefer basic parts with stock."),
     "part_categories": ("bom", "Browse when a keyword search returns nothing."),
@@ -168,12 +169,16 @@ def describe_tools(descriptions: dict[str, str] | None = None) -> list[dict[str,
 
 
 def settings_payload(descriptions: dict[str, str] | None = None, model: str | None = None) -> dict[str, Any]:
+    from . import knowledge
+
     return {
         "model": model,
         "levels": LEVELS,
         "tools": describe_tools(descriptions),
         "workflows": WORKFLOWS,
         "guidance": GUIDANCE,
+        "playbooks": {phase: knowledge.digest(phase) for phase in ("bom", "schematic", "board")},
+        "references": knowledge.index(),
     }
 
 def phase_instructions(phase: str) -> str:
@@ -194,5 +199,11 @@ def phase_instructions(phase: str) -> str:
     for index, step in enumerate(WORKFLOWS[key], start=1):
         lines.append(f"{index}. {step['step']} — {step['detail']}")
     lines.append(f"{key.title()} standard: {GUIDANCE[key]}")
+
+    # The repo's own rules, not a paraphrase: a cited digest per phase plus the tool to read more.
+    from . import knowledge
+
+    lines.append("")
+    lines.append(knowledge.digest(phase))
     return "\n".join(lines)
 
