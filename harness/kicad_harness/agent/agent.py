@@ -1084,6 +1084,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             },
             "manufacturing": mfg,
             "copper_balance": balance.report(index),
+            "test_coverage": balance.test_coverage(index),
             "schematic": schematic_report,
         }
         try:

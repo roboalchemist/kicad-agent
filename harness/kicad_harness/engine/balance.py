@@ -46,3 +46,18 @@ def report(index: dict[str, Any]) -> dict[str, Any]:
         "ratio": ratio,
         "balanced": None if ratio is None else abs(ratio - 0.5) <= 0.2,
     }
+
+
+def test_coverage(index: dict[str, Any]) -> dict[str, Any]:
+    """How many board nets have a test point (a footprint whose reference starts with TP)."""
+    nets = {str(pad.get("net")) for pad in index.get("pads", []) if pad.get("net")}
+    points = {str(pad.get("ref")) for pad in index.get("pads", [])
+              if str(pad.get("ref", "")).startswith("TP")}
+    covered = {str(pad.get("net")) for pad in index.get("pads", [])
+               if str(pad.get("ref", "")).startswith("TP") and pad.get("net")}
+    return {
+        "test_points": len(points),
+        "nets": len(nets),
+        "covered": len(covered & nets),
+        "coverage": round(len(covered & nets) / len(nets), 2) if nets else None,
+    }

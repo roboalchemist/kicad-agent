@@ -151,7 +151,7 @@ thermal), plus knowledge search.
 | High-speed | **done** — `route_diff_pair`, `match_length`, via types (through/micro/blind/buried) and `add_via_stitching`. No serpentine generator. |
 | Mechanical outline | **done for wireframes** — polygon outline, `import_outline` for DXF (LWPOLYLINE/LINE) and STEP (EDGE_CURVE lines and sampled arcs), `add_keepout` rule areas, `add_cutout` circular holes and `add_mounting_holes` (four corner holes with copper keepouts). STEP B-spline edges are approximated by their endpoints. |
 | Silkscreen automation | **done** — collision-aware `place_silkscreen`. |
-| Test points | **done** — end-to-end test: one symbol + one footprint per net with the same reference, pad on the net. |
+| Test points | **done** — end-to-end test: one symbol + one footprint per net with the same reference, pad on the net; `check` reports `test_coverage` (nets with a TP, ratio). |
 | Thermal vias / copper balance | **done** — `add_thermal_vias`, `add_via_stitching`, and a copper-balance estimate (front/back area and ratio) in `check`. |
 | BOM lifecycle | **done** — alternates, MSL, ESD class, lead time and lifecycle status in `bom.csv`. |
 | Layout metrics | **done** — owner distance, alignment, wire length, crossings, utilisation; `layout_metric` goal criterion. |

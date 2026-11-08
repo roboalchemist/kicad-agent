@@ -260,3 +260,15 @@ def test_circular_cutout_is_written_to_edge_cuts(engine, board) -> None:
     assert result["diameter"] == 3.2
     text = Path(board).read_text(encoding="utf-8")
     assert text.count("gr_circle") >= 1
+
+
+def test_test_coverage_counts_nets_with_test_points() -> None:
+    from kicad_harness.engine import balance
+
+    index = {"pads": [
+        {"ref": "R1", "pad": "1", "net": "VIN"},
+        {"ref": "R1", "pad": "2", "net": "GND"},
+        {"ref": "TP1", "pad": "1", "net": "VIN"},
+    ]}
+    report = balance.test_coverage(index)
+    assert report == {"test_points": 1, "nets": 2, "covered": 1, "coverage": 0.5}
