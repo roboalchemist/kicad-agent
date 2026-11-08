@@ -506,6 +506,9 @@ export interface SettingsTool {
 export interface SettingsWorkflowStep {
   step: string;
   detail: string;
+  tools: string[];
+  gate: string;
+  ref: string;
 }
 
 export interface SettingsReference {

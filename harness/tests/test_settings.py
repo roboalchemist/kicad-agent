@@ -56,12 +56,16 @@ def test_phase_instructions_carry_the_workflow_and_standard() -> None:
     schematic = tool_catalog.phase_instructions("schematic")
     assert "Sourcing workflow" in schematic
     assert "Schematic workflow" in schematic
-    assert "Make it legible" in schematic
+    assert "Arrange by circuit" in schematic
+    assert "gate: ERC errors 0" in schematic
+    assert "pcb-placement#Grouping" in schematic
     assert tool_catalog.GUIDANCE["schematic"] in schematic
 
     board = tool_catalog.phase_instructions("board")
     assert "Board workflow" in board
-    assert "Set the outline" in board
+    assert "Outline, holes & keepouts" in board
+    assert "gate: DRC 0" in board
+    assert "pcb-mechanical#Board Outline" in board
     assert tool_catalog.GUIDANCE["board"] in board
     assert "Schematic workflow" not in board
 
@@ -97,3 +101,15 @@ async def test_settings_include_playbooks_and_the_reference_library(services) ->
         assert len(body["playbooks"][phase]) > 500, phase
         assert ".agents/" in body["playbooks"][phase], phase
     assert "read_design_reference" in {tool["name"] for tool in body["tools"]}
+
+
+def test_every_workflow_step_cites_a_real_rule_section() -> None:
+    from kicad_harness.agent import tool_catalog
+
+    assert tool_catalog.workflow_issues() == []
+    for phase, steps in tool_catalog.WORKFLOWS.items():
+        assert len(steps) >= 6, phase
+        for step in steps:
+            assert step["tools"], step["step"]
+            assert step["gate"], step["step"]
+            assert "#" in step["ref"], step["step"]

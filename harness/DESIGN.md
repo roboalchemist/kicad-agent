@@ -484,7 +484,11 @@ Back/Forward and reload support), not modals; both work with no project selected
   docstring summary (read from `build_agent()._function_toolset`, so it cannot go stale) and a
   one-line "when to use it" guidance. `agent/tool_catalog.py` owns the level/guidance map and
   keeps unknown new tools in the list (defaulting to global) rather than dropping them.
-- `workflows`: ordered steps for the BOM/sourcing, schematic and board phases.
+- `workflows`: ordered, sourced steps for the BOM/sourcing (8), schematic (9) and board (10)
+  phases. Every step carries the tools it uses, a **gate** (what must be true before moving on)
+  and a `ref` to the rule section it comes from (e.g. `pcb-placement#Priority Order`).
+  `workflow_issues()` resolves every citation against the bundled knowledge, so the workflow
+  cannot drift from the rules; a test fails if a step loses its gate, tools or source.
 - `guidance`: the general standard for each phase (BOM = orderable truth; schematic = correct and
   readable; board = DRC/routing/mechanics and the picture).
 

@@ -79,34 +79,181 @@ TOOLS: dict[str, tuple[str, str]] = {
 }
 
 
-WORKFLOWS: dict[str, list[dict[str, str]]] = {
+WORKFLOWS: dict[str, list[dict[str, object]]] = {
     "bom": [
-        {"step": "Read the brief", "detail": "List every part, value and rating the circuit needs before searching."},
-        {"step": "Search the catalogue", "detail": "find_parts / part_categories. Prefer basic parts with deep stock."},
-        {"step": "Verify each part", "detail": "check_part for stock, price and tier; part_datasheet for pinout and ratings."},
-        {"step": "Record the part on the symbol", "detail": "LCSC + MPN properties, so BOM, schematic and board agree."},
-        {"step": "Resolve and audit the BOM", "detail": "Resolve missing codes; check basic coverage and why the rest is extended."},
-        {"step": "Keep it orderable", "detail": "Every line names a real JLCPCB part; the sync criterion enforces BOM = schematic = board."},
+        {"step": "Requirements & constraints",
+         "detail": "Performance targets, power budget, thermal limits, form factor and compliance "
+                   "before choosing a single part.",
+         "tools": ["set_goal", "design_summary"], "gate": "brief captured as measurable criteria",
+         "ref": "pcb-design-process#Phase Details"},
+        {"step": "Component selection & footprints",
+         "detail": "Every part needs a real KiCad footprint and a net class; a symbol without a "
+                   "footprint cannot reach the board.",
+         "tools": ["find_parts", "find_footprints", "check_part"],
+         "gate": "footprint exists for every symbol", "ref": "pcb-bom-components#Footprint Verification Process"},
+        {"step": "Availability & lifecycle",
+         "detail": "Stock, price, tier, lead time and lifecycle state; second sources for any part "
+                   "on the critical path.",
+         "tools": ["find_parts", "part_categories", "check_part"],
+         "gate": "every part in stock; alternates identified",
+         "ref": "pcb-bom-components#Component Availability & Lead Time Planning"},
+        {"step": "Ratings & derating",
+         "detail": "Confirm voltage/current/temperature margins from the datasheet - not from the "
+                   "catalogue title.",
+         "tools": ["part_datasheet", "check_part"], "gate": "derating rules met",
+         "ref": "pcb-bom-components#Component Derating Guidelines"},
+        {"step": "Package & assembly",
+         "detail": "Package choice, MSL, ESD and pick-and-place compatibility for the assembler.",
+         "tools": ["check_part"], "gate": "assembler can place and handle every package",
+         "ref": "pcb-bom-components#Component Package Selection"},
+        {"step": "Record the part identity",
+         "detail": "LCSC + MPN on the symbol; identical parts collapse to one line by part number, "
+                   "not by schematic label.",
+         "tools": ["schematic_summary"], "gate": "every BOM line names an orderable part",
+         "ref": "pcb-bom-components#BOM Documentation Requirements"},
+        {"step": "Document alternates",
+         "detail": "Second sources, supplier notes and handling constraints travel with the BOM.",
+         "tools": ["list_feedback", "reply_to_thread"], "gate": "alternates recorded where needed",
+         "ref": "pcb-bom-components#Alternate/Second Source Strategy"},
+        {"step": "Audit & freeze",
+         "detail": "Resolve unassigned codes, check basic coverage and the measured reason for every "
+                   "extended part.",
+         "tools": ["check", "check_schematic"], "gate": "BOM = schematic = board (sync criterion)",
+         "ref": "pcb-design-process#Phase Details"},
     ],
     "schematic": [
-        {"step": "Set the goal", "detail": "set_goal with the user's intent and measurable criteria."},
-        {"step": "Source the parts", "detail": "Run the BOM workflow first; a part without a footprint cannot reach the board."},
-        {"step": "Draw the circuit", "detail": "generate_schematic_skidl for a new design, add_symbol/connect_pins to extend it."},
-        {"step": "Make ERC clean", "detail": "check_schematic; fix errors and floating pins before anything else."},
-        {"step": "Make it legible", "detail": "check_schematic_layout -> tidy_schematic -> route_schematic; act on findings."},
-        {"step": "Look at it", "detail": "render_schematic: fix rows out of sequence, colliding text, marooned parts."},
-        {"step": "Hand over to layout", "detail": "start_board_layout only when ERC 0 and legible 0."},
+        {"step": "Requirements & concept",
+         "detail": "Turn the request into criteria: function, rails, power budget, thermal and "
+                   "mechanical envelope, compliance.",
+         "tools": ["set_goal", "design_summary"], "gate": "criteria saved",
+         "ref": "pcb-design-process#Phase Details"},
+        {"step": "Source the parts first",
+         "detail": "Run the sourcing workflow; a part without a stocked, footprinted identity will "
+                   "fail later.",
+         "tools": ["find_parts", "check_part", "part_datasheet"],
+         "gate": "all parts stocked and footprinted",
+         "ref": "pcb-bom-components#Footprint Verification Process"},
+        {"step": "Net classes & naming",
+         "detail": "Name power, ground and high-speed nets before drawing so layout can route by "
+                   "class later.",
+         "tools": ["add_schematic_label", "label_pin"], "gate": "rails and critical nets named",
+         "ref": "pcb-design-process#Phase Details"},
+        {"step": "Draw the circuit",
+         "detail": "generate_schematic_skidl for a whole design, add_symbol/connect_pins to extend or "
+                   "repair it.",
+         "tools": ["generate_schematic_skidl", "add_symbol", "connect_pins"],
+         "gate": "every part placed, every pin connected or no-connect",
+         "ref": "pcb-design-process#Strict Dependencies"},
+        {"step": "Make ERC clean",
+         "detail": "Fix errors and floating pins before anything cosmetic; power flags for every "
+                   "supplied rail.",
+         "tools": ["check_schematic", "schematic_summary"], "gate": "ERC errors 0",
+         "ref": "pcb-design-process#Phase Details"},
+        {"step": "Arrange by circuit",
+         "detail": "Stages left to right, passives beside the part they serve, power symbols on the "
+                   "nets they actually name.",
+         "tools": ["check_schematic_layout", "tidy_schematic", "move_schematic_symbol"],
+         "gate": "findings empty; legible score 0",
+         "ref": "pcb-placement#Grouping"},
+        {"step": "Draw connections",
+         "detail": "Wires for point-to-point nets; labels only for nets that cross stages, so the "
+                   "sheet reads without chasing names.",
+         "tools": ["route_schematic", "label_pin"], "gate": "router reports no netlist change",
+         "ref": "pcb-routing#Trace Geometry"},
+        {"step": "Review the picture",
+         "detail": "Look at the rendered sheet: rows out of sequence, colliding reference text and "
+                   "marooned parts do not show up in the score.",
+         "tools": ["render_schematic", "check_schematic_layout"],
+         "gate": "no obvious visual fault", "ref": "pcb-silkscreen#Text Sizing"},
+        {"step": "Hand over to layout",
+         "detail": "Create the board from the finished netlist only when the schematic is correct, "
+                   "readable and sourced.",
+         "tools": ["start_board_layout"], "gate": "ERC 0, legible 0, netlist complete",
+         "ref": "pcb-design-process#Strict Dependencies"},
     ],
     "board": [
-        {"step": "Set the outline", "detail": "set_board_outline to the mechanical size before placing parts."},
-        {"step": "Place by function", "detail": "move/rotate/flip; keep a stage in a row and its parts near the nets they serve."},
-        {"step": "Route", "detail": "autoroute for the bulk, add_track/via for short or critical nets."},
-        {"step": "Pour and refill", "detail": "add_copper_zone then refill_zones after the last move."},
-        {"step": "Check the rules", "detail": "check: DRC, unconnected, size, edge and every goal criterion."},
-        {"step": "Look at it", "detail": "check/render_view returns the image; fix what DRC cannot see."},
+        {"step": "Stackup & design rules first",
+         "detail": "Layer count, materials, impedance and design rules must exist before placement so "
+                   "violations surface immediately.",
+         "tools": ["design_summary"], "gate": "stackup and rules approved",
+         "ref": "pcb-design-process#Phase Details"},
+        {"step": "Outline, holes & keepouts",
+         "detail": "Board outline, mounting holes, connector locations and mechanical keepouts from "
+                   "the enclosure.",
+         "tools": ["set_board_outline"], "gate": "outline and holes match the mechanics",
+         "ref": "pcb-mechanical#Board Outline"},
+        {"step": "Place fixed parts first",
+         "detail": "Connectors, mounting holes and test points are anchors; they define the routing "
+                   "topology.",
+         "tools": ["move_footprint", "rotate_footprint", "flip_footprint"],
+         "gate": "every fixed part within 0.1 mm of its mechanical position",
+         "ref": "pcb-placement#Priority Order"},
+        {"step": "Critical ICs & decoupling",
+         "detail": "ICs next, decoupling capacitors within 3-5 mm of their power pins, timing parts "
+                   "adjacent to their IC.",
+         "tools": ["move_footprint", "rotate_footprint", "measure"],
+         "gate": "decoupling and timing parts at their IC",
+         "ref": "pcb-placement#Priority Order"},
+        {"step": "Group, orient, plan silkscreen",
+         "detail": "Keep analog/digital/power regions distinct; orient similar parts consistently; "
+                   "leave room for readable references.",
+         "tools": ["move_footprint", "move_reference_text"],
+         "gate": "placement review clean", "ref": "pcb-placement#Orientation"},
+        {"step": "Route power and planes",
+         "detail": "Power distribution and ground planes first - wide traces and planes before "
+                   "signals.",
+         "tools": ["autoroute", "add_track", "add_copper_zone", "refill_zones"],
+         "gate": "rails and planes continuous", "ref": "pcb-routing#Priority Order"},
+        {"step": "Route critical, then general",
+         "detail": "Clocks and differential pairs before standard signals; 45-degree bends, 3W "
+                   "spacing, continuous return paths, minimal vias.",
+         "tools": ["autoroute", "add_track", "add_via", "delete_tracks"],
+         "gate": "unconnected 0", "ref": "pcb-routing#Signal Integrity"},
+        {"step": "Pours, stitching & thermal",
+         "detail": "Refill after the last move; thermal relief on pads, stitching vias, no floating "
+                   "islands.",
+         "tools": ["add_copper_zone", "refill_zones", "add_via"],
+         "gate": "pours refilled, copper balanced",
+         "ref": "pcb-copper-pours#Thermal Relief"},
+        {"step": "Verify like a reviewer",
+         "detail": "DRC zero, netlist compare, edge/mechanical clearance, silkscreen legibility, DFM "
+                   "for the assembler.",
+         "tools": ["check", "measure", "render_view"],
+         "gate": "DRC 0, unconnected 0, size/edge criteria pass",
+         "ref": "pcb-design-process#Phase Details"},
+        {"step": "Manufacturing files & handoff",
+         "detail": "Gerbers, drill, pick-and-place and the final BOM; freeze the version and record "
+                   "the review.",
+         "tools": ["list_versions", "restore_version"],
+         "gate": "outputs generated and version tagged",
+         "ref": "pcb-design-process#Phase Details"},
     ],
 }
 
+
+def workflow_issues() -> list[str]:
+    """Every workflow step must cite a real rule section; drift is a test failure."""
+    from . import knowledge
+
+    headings: dict[str, set[str]] = {}
+    for doc in knowledge.index():
+        headings.setdefault(doc["id"], set()).update(doc["headings"])
+    issues: list[str] = []
+    for phase, steps in WORKFLOWS.items():
+        if len(steps) < 6:
+            issues.append(f"{phase}: only {len(steps)} steps")
+        for step in steps:
+            label = f"{phase} / {step.get('step')}"
+            for field in ("detail", "tools", "gate", "ref"):
+                if not step.get(field):
+                    issues.append(f"{label}: missing {field}")
+            ref = str(step.get("ref") or "")
+            topic, _, heading = ref.partition("#")
+            if topic not in headings:
+                issues.append(f"{label}: unknown source {topic!r}")
+            elif heading and heading not in headings[topic]:
+                issues.append(f"{label}: unknown section {heading!r} in {topic}")
+    return issues
 
 GUIDANCE: dict[str, str] = {
     "bom": (
@@ -195,9 +342,12 @@ def phase_instructions(phase: str) -> str:
 
     key = "board" if phase == "board" else "schematic"
     lines.append("")
-    lines.append(f"{key.title()} workflow:")
+    lines.append(f"{key.title()} workflow (each step has a gate; the source is a rule section):")
     for index, step in enumerate(WORKFLOWS[key], start=1):
-        lines.append(f"{index}. {step['step']} — {step['detail']}")
+        lines.append(
+            f"{index}. {step['step']} — {step['detail']} "
+            f"[gate: {step['gate']}; tools: {', '.join(step['tools'])}; {step['ref']}]"
+        )
     lines.append(f"{key.title()} standard: {GUIDANCE[key]}")
 
     # The repo's own rules, not a paraphrase: a cited digest per phase plus the tool to read more.

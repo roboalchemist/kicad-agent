@@ -2106,3 +2106,31 @@ div.tool-card > .tool-card-header { padding: 3px 8px; }
   grid-column: 2;
   font-size: 10.5px;
 }
+
+.settings-step-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 3px 0;
+}
+.settings-step-tools code {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text-soft);
+}
+.settings-step-gate {
+  font-size: 10.5px;
+  color: var(--text-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: baseline;
+}
+.settings-step-ref {
+  margin-left: auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  color: var(--muted);
+}

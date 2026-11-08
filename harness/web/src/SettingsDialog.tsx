@@ -146,6 +146,15 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
                     <li key={item.step}>
                       <b>{item.step}</b>
                       <div className="muted">{item.detail}</div>
+                      <div className="settings-step-tools">
+                        {item.tools.map((tool) => (
+                          <code key={tool}>{tool}</code>
+                        ))}
+                      </div>
+                      <div className="settings-step-gate">
+                        <span className="badge badge-phase">gate</span> {item.gate}
+                        <span className="settings-step-ref">{item.ref}</span>
+                      </div>
                     </li>
                   ))}
                 </ol>
