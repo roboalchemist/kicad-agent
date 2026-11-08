@@ -474,6 +474,22 @@ The UI therefore updates live even while a headless CLI run edits the design fro
 - **Versions:** a timeline for the current branch (author icon, subject, time, DRC metrics, linked thread numbers) with view, compare-with-current, restore, branch-from-here and a branch switcher. Viewing an old version shows its board and the pins resolved against it.
 - **Agent tab:** chat with reasoning, tool-call cards (render images inline; edits show before/after; checks show pass/fail), approvals for supervised tools, and loop/supervised toggles. Frontend tools drive the viewer. `useAgentContext` shares the current selection and viewed version.
 
+### Settings (global, outside a project)
+
+`GET /api/settings` serves the harness reference that is the same for every design, and the
+Settings button in the header opens it even with no project selected:
+
+- `tools`: every agent tool with its **level** (`global`, `bom`, `schematic`, `board`), the live
+  docstring summary (read from `build_agent()._function_toolset`, so it cannot go stale) and a
+  one-line "when to use it" guidance. `agent/tool_catalog.py` owns the level/guidance map and
+  keeps unknown new tools in the list (defaulting to global) rather than dropping them.
+- `workflows`: ordered steps for the BOM/sourcing, schematic and board phases.
+- `guidance`: the general standard for each phase (BOM = orderable truth; schematic = correct and
+  readable; board = DRC/routing/mechanics and the picture).
+
+The UI (`SettingsDialog.tsx`) shows three tabs — Tools (search + level filters, expandable rows),
+Workflow (three columns) and Guidance — and nothing in it is per-project state.
+
 ### UI specification (what "done" looks like)
 
 **Header:**

@@ -710,6 +710,28 @@ Keep messages to the user short: what you changed and why.
 """
 
 
+_tool_description_cache: dict[str, str] | None = None
+
+
+def tool_descriptions() -> dict[str, str]:
+    """``{tool name: live docstring}`` for the Settings page, built once per process.
+
+    Building the agent registers the tools without calling a model (``defer_model_check``), so
+    this is cheap and always reflects the code, not a hand-maintained list.
+    """
+    global _tool_description_cache
+    if _tool_description_cache is None:
+        try:
+            built = build_agent()
+            _tool_description_cache = {
+                name: (tool.description or "")
+                for name, tool in built._function_toolset.tools.items()
+            }
+        except Exception:
+            _tool_description_cache = {}
+    return _tool_description_cache
+
+
 _model_override: str | None = None
 
 

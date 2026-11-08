@@ -9,6 +9,7 @@ import { api } from "./api.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { ProjectsButton } from "./ProjectsDialog.tsx";
+import { SettingsButton } from "./SettingsDialog.tsx";
 import { getTheme, toggleTheme } from "./theme.ts";
 
 export function Header({ onToggleLoop, onToggleSupervised }: { onToggleLoop: (v: boolean) => void; onToggleSupervised: (v: boolean) => void }) {
@@ -43,6 +44,7 @@ export function Header({ onToggleLoop, onToggleSupervised }: { onToggleLoop: (v:
           ))}
         </select>
         <ProjectsButton />
+        <SettingsButton />
         <span className="muted" data-testid="branch-head">
           {h.design?.branch ?? "—"} @ {(h.design?.head ?? "").slice(0, 8) || "—"}
         </span>

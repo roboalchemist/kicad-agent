@@ -492,3 +492,26 @@ export interface DesignState {
   loop?: boolean;
   supervised?: boolean;
 }
+
+
+/** Global settings: every agent tool with its stage/guidance, plus phase workflow and guidance. */
+export interface SettingsTool {
+  name: string;
+  level: string;
+  summary: string;
+  guidance: string;
+  description: string;
+}
+
+export interface SettingsWorkflowStep {
+  step: string;
+  detail: string;
+}
+
+export interface SettingsResponse {
+  model: string | null;
+  levels: { id: string; label: string }[];
+  tools: SettingsTool[];
+  workflows: Record<string, SettingsWorkflowStep[]>;
+  guidance: Record<string, string>;
+}

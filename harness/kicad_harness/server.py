@@ -570,6 +570,16 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------------ models
 
+    @app.get("/api/settings")
+    async def settings():
+        """Global harness reference: every tool with its stage and guidance, the phase
+        workflows and the general guidance. Not tied to any design."""
+        from kicad_harness.agent import tool_catalog
+        from kicad_harness.agent.agent import current_model, tool_descriptions
+
+        descriptions = await asyncio.to_thread(tool_descriptions)
+        return tool_catalog.settings_payload(descriptions, current_model())
+
     @app.get("/api/models")
     async def list_models(request: Request):
         """Models the UI may pick, plus the one new runs use."""

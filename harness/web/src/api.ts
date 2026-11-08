@@ -11,6 +11,7 @@ import type {
   GoalEval,
   MeasureResult,
   ModelsResponse,
+  SettingsResponse,
   Phase,
   PickIndex,
   RunEvent,
@@ -79,6 +80,7 @@ export const api = {
     `/api/designs/${d}/schematic.svg?rev=${encodeURIComponent(rev)}&sheet=${sheet}` +
     (version ? `&v=${encodeURIComponent(version)}` : ""),
   models: () => get<ModelsResponse>("/api/models"),
+  settings: () => get<SettingsResponse>("/api/settings"),
   stopRun: (d: string) => send<{ stopping: boolean }>(`/api/designs/${d}/stop`, "POST", {}),
   setModel: (model: string) => send<{ current: string }>("/api/models", "PUT", { model }),
   versionSummary: (d: string, sha: string) => get<VersionSummary>(`/api/designs/${d}/versions/${sha}/summary`),
