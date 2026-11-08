@@ -1671,9 +1671,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         footprints = sorted(index.get("footprints", []), key=lambda fp: fp.get("ref", ""))
 
         def work(board) -> dict:
-            eng = engine(ctx)
             occupied = [tuple(fp["bbox"]) for fp in footprints]
-            placed = 0
+            moves: list[dict[str, float | str]] = []
             for fp in footprints:
                 x, y, w, h = fp["bbox"]
                 text = str(fp.get("ref") or "")
@@ -1688,11 +1687,11 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                     box = (cx, cy - 1.0, cx + width, cy + 1.0)
                     if any(_boxes_overlap(box, other) for other in occupied):
                         continue
-                    eng.call("move_reference_text", board=board, ref=fp["ref"], x=cx, y=cy)
+                    moves.append({"ref": fp["ref"], "x": cx, "y": cy})
                     occupied.append(box)
-                    placed += 1
                     break
-            return {"placed": placed, "footprints": len(footprints)}
+            engine(ctx).call("move_reference_texts", board=board, moves=moves)
+            return {"placed": len(moves), "footprints": len(footprints)}
 
         return await _edit(ctx, "place_silkscreen", "Place silkscreen references", work)
 

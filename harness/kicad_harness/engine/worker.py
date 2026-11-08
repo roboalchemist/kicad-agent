@@ -686,6 +686,24 @@ def move_reference_text(board, ref, x, y):
 
 
 @rpc
+def move_reference_texts(board, moves):
+    """Move several reference designators in one load/save (silkscreen placement)."""
+    if not isinstance(moves, list):
+        raise RpcError("InvalidParams", "moves must be a list of {ref, x, y}")
+
+    def edit(b):
+        out = []
+        for item in moves:
+            ref = item.get("ref")
+            text = _footprint(b, ref).Reference()
+            text.SetPosition(_vec(_num(item.get("x"), "x"), _num(item.get("y"), "y")))
+            out.append({"ref": ref, "x": _mm(text.GetPosition().x), "y": _mm(text.GetPosition().y)})
+        return {"moved": len(out), "items": out}
+
+    return _edit(board, edit, refill=False)
+
+
+@rpc
 def delete_tracks(board, nets=None, uuids=None):
     """Delete tracks and vias on ``nets`` and/or with ``uuids``; with neither, delete all of them."""
     net_list = None if nets is None else [_net_name(n) for n in _as_list(nets, "nets")]

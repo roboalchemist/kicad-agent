@@ -338,3 +338,15 @@ def test_export_dsn(engine, board, tmp_path):
     assert engine.export_dsn(board, out) == {"path": str(out)}
     dsn = out.read_text()
     assert dsn.startswith("(pcb") and "(network" in dsn and "U1" in dsn
+
+
+def test_moves_several_reference_texts_in_one_save(engine, board):
+    result = engine.move_reference_texts(board, [
+        {"ref": "U1", "x": 4.0, "y": 5.0},
+        {"ref": "C1", "x": 6.0, "y": 7.0},
+    ])
+    assert result["moved"] == 2
+    from kicad_harness.engine.geometry import resolve
+    index = engine.index(board)
+    u1 = next(f for f in index["footprints"] if f["ref"] == "U1")
+    assert (u1["ref_text"]["x"], u1["ref_text"]["y"]) == (4.0, 5.0)

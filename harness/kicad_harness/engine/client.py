@@ -244,6 +244,10 @@ class Engine:
         """Delete any board items by UUID."""
         return self.call("delete_items", board, uuids=list(uuids))
 
+    def move_reference_texts(self, board: str | os.PathLike[str],
+                             moves: Sequence[dict[str, Any]]) -> dict:
+        return self.call("move_reference_texts", board, moves=[dict(item) for item in moves])
+
     def add_track(self, board: str | os.PathLike[str], net: str, points: Sequence[Sequence[float]],
                   width: float = 0.25, layer: str = "F.Cu") -> dict:
         """Add one segment per consecutive pair of ``points``. ``{"uuids": [...]}``."""
