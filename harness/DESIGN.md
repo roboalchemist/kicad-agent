@@ -336,8 +336,22 @@ sheet never looks like a passing one.
   of leaving most of an A1/A0 sheet blank; callers can pass a standard paper size.
 
 Spacing is retried at 1.0/1.25/1.6/2.1 until `analyze()` reports 0, so the layout is as tight as
-it can be while passing. The agent reaches it through `check_schematic_layout` and
-`tidy_schematic`; the goal loop keeps running until `[legible]` passes.
+it can be while passing.
+
+Three further pieces let the agent finish a sheet itself rather than receive a finished one:
+
+- `_owners()` assigns every 2-pin passive to the part it serves, and `tidy` places it in that
+  part's column so pull-ups sit by their input and decoupling caps by their IC.
+- `_align_symbols()` lines up the two pins of each point-to-point net before any wire exists
+  (moving a symbol after its stubs exist would orphan them), giving the router straight runs.
+- `findings()` states the problems in words (a power symbol whose value contradicts its net, a
+  passive far from its owner, a net left as two distant labels); `route()` draws direct wires
+  for 2-pin nets and rolls back any wire that changes the pin partition.
+
+The agent reaches these through `check_schematic_layout`, `tidy_schematic`, `route_schematic`
+and the edit tools (`move_schematic_symbol`, `set_symbol_value`, `disconnect_schematic`,
+`label_pin`); `route_schematic` also runs ERC before/after and reverts the whole edit if errors
+increase. The goal loop keeps running until `[legible]` passes.
 
 `evaluate(goal, index, drc, threads) -> {"met": bool, "criteria": [{"id", "type", "passed", "value", "detail"}]}`.
 

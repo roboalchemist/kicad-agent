@@ -797,6 +797,10 @@ def _lay_out(
             legend_x += slot_width(ref) + gap
         legend_y += row_height + gap
 
+    # Line the pins of point-to-point nets up before wires exist, so the router can draw
+    # straight connections between stages (and between a passive and its owner).
+    aligned = _align_symbols(doc, pin_net)
+
     # Re-read the placements: ``move_symbol`` changed the file, and pin positions must be
     # measured from where the symbols are *now*, not from the pre-move snapshot.
     placements = sorted(doc.placements(), key=lambda p: _natural_key(p.reference))
@@ -863,6 +867,14 @@ def _lay_out(
             stubs += 1
             labels += 1
 
+    if not paper:
+        boxes_after = symbol_boxes(doc)
+        page_w = max((box[2] for box in boxes_after.values()), default=MARGIN) + MARGIN
+        page_h = max((box[3] for box in boxes_after.values()), default=MARGIN) + MARGIN
+        node_after = find_one(doc.tree, "paper")
+        if node_after is not None:
+            node_after[:] = ["paper", "User", num(page_w), num(page_h + TITLE_BAND)]
+
     return {
         "paper": chosen,
         "columns": total_cols,
@@ -872,6 +884,7 @@ def _lay_out(
         "symbols": len(placements),
         "stubs": stubs,
         "labels": labels,
+        "aligned_pins": aligned,
     }
 
 def findings(doc: Schematic) -> list[str]:
@@ -966,3 +979,50 @@ def route(doc: Schematic, *, max_mm: float = 80.0) -> dict[str, Any]:
     return {"wired": wired, "skipped": skipped,
             "partitions_ok": _partitions(doc) == target}
 
+def _align_symbols(doc: Schematic, pin_net: dict[tuple[str, str], str], *,
+                   gap: float = 4.0) -> int:
+    """Place each right-hand part of a point-to-point net on the row of the pin it connects to.
+
+    Parts are processed column by column, left to right, so a move made for one net is seen by
+    the next column. Within a column the followers are sorted by their target row and pushed
+    apart just enough not to touch, which turns a pile of labels into visible channels.
+    """
+    net_pins: dict[str, list[tuple[str, str]]] = {}
+    for (ref, number), name in pin_net.items():
+        net_pins.setdefault(name, []).append((ref, number))
+
+    wanted: dict[float, list[tuple[float, str, str, float]]] = {}
+    for _name, pins in net_pins.items():
+        if len(pins) != 2:
+            continue
+        (ref_a, pin_a), (ref_b, pin_b) = pins
+        a = doc.pin_position(doc._placement(ref_a), pin_a)
+        b = doc.pin_position(doc._placement(ref_b), pin_b)
+        if a is None or b is None or abs(a[0] - b[0]) < 1.0:
+            continue
+        follower, follower_pin, target = (
+            (ref_b, pin_b, a[1]) if b[0] > a[0] else (ref_a, pin_a, b[1]))
+        follower_x = doc._placement(follower).x
+        wanted.setdefault(round(follower_x, 1), []).append(
+            (target, follower, follower_pin, doc.pin_position(doc._placement(follower), follower_pin)[1])
+        )
+
+    aligned = 0
+    for column_x in sorted(wanted):
+        entries = sorted(wanted[column_x], key=lambda item: (item[0], _natural_key(item[1])))
+        cursor: float | None = None
+        for target_y, follower, follower_pin, current_pin_y in entries:
+            placement = doc._placement(follower)
+            if placement is None:
+                continue
+            box = symbol_boxes(doc)[follower]
+            desired = placement.y + (target_y - current_pin_y)
+            if cursor is not None:
+                top = box[1] + (desired - placement.y)
+                if top < cursor:
+                    desired += cursor - top
+            doc.move_symbol(follower, placement.x, desired)
+            new_box = symbol_boxes(doc)[follower]
+            cursor = new_box[3] + gap
+            aligned += 1
+    return aligned

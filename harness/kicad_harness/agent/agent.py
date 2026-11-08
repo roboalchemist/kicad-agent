@@ -1558,7 +1558,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
-    async def route_schematic(ctx: RunContext[HarnessDeps], max_mm: float = 80) -> ToolReturn:
+    async def route_schematic(ctx: RunContext[HarnessDeps], max_mm: float = 300) -> ToolReturn:
         """Draw direct wires between the two pins of point-to-point nets (<= max_mm apart).
 
         Labels stay in place, so net names are unchanged; the wire only makes the connection

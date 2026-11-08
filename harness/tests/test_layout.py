@@ -176,3 +176,20 @@ def test_router_wires_a_point_to_point_net_and_keeps_the_netlist(
     assert report["partitions_ok"] is True
     assert layout._partitions(doc) == before
     assert "MID" in report["wired"], report
+
+
+def test_tidy_aligns_the_pins_of_a_cross_stage_net(tmp_path: Path, libraries, many_pin: str) -> None:
+    """Channel placement lines the two pins of a point-to-point net up, so a wire can be straight."""
+    doc = sch.Schematic.create(tmp_path / "align.kicad_sch", libraries=libraries)
+    doc.add_symbol(many_pin, "U1", 80.0, 80.0)
+    doc.add_symbol(many_pin, "U2", 200.0, 140.0)
+    doc.connect_pins(("U1", "1"), ("U2", "1"), net="SIG")
+    layout.tidy(doc)
+    a = doc.pin_position(doc._placement("U1"), "1")
+    b = doc.pin_position(doc._placement("U2"), "1")
+    assert a is not None and b is not None
+    assert abs(a[1] - b[1]) < 0.2, "the two pins of SIG are not on one row"
+    # and the router can now draw it without changing the netlist
+    before = layout._partitions(doc)
+    report = layout.route(doc)
+    assert report["partitions_ok"] and "SIG" in report["wired"], report
