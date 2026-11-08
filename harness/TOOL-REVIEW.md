@@ -146,7 +146,7 @@ thermal), plus knowledge search.
 |---|---|
 | Net classes + stackup | **done** — `set_net_class`/`set_stackup` persist to the workspace and are mirrored into `*.kicad_pro` (class clearance/width, netclass patterns, board minimum track width and clearance), so KiCad's own DRC uses the same numbers. Per-class width is additionally checked by `check` (KiCad has no per-class width rule). |
 | Manufacturing export + gate | **done** — Gerbers, Excellon drill, pick-and-place, BOM and manifest; `check` reports presence/staleness; `manufacturing` goal criterion. |
-| Generator regression | **done** — the bundled golden flow draws a four-part design with `generate_schematic` from scratch. |
+| Generator regression | **done** — the bundled golden flow draws from scratch, and `generate` now verifies the produced netlist *and* each PWR_FLAG's net, retrying when skidl's stochastic router shorts two nets or parks a flag on the wrong one. |
 | Connection retry | **done** — `stream_with_token_retry` retries provider connection errors with backoff. |
 | High-speed | **done** — `route_diff_pair`, `match_length`, via types (through/micro/blind/buried) and `add_via_stitching`. No serpentine generator. |
 | Mechanical outline | **done for wireframes** — polygon outline, `import_outline` for DXF (LWPOLYLINE/LINE) and STEP (EDGE_CURVE lines and sampled arcs), `add_keepout` rule areas, `add_cutout` circular holes and `add_mounting_holes` (four corner holes with copper keepouts). STEP B-spline edges are approximated by their endpoints. |

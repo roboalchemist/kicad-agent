@@ -162,7 +162,7 @@ def generate(
     last_error: Exception | None = None
     for attempt in range(8):
         try:
-            return _run_once(payload, out, env, timeout)
+            result = _run_once(payload, out, env, timeout)
         except EngineError as exc:
             last_error = exc
             if "RoutingFailure" not in str(exc) or attempt == 7:
@@ -170,8 +170,62 @@ def generate(
             # Its placement/routing pass is stochastic: a short pause then a fresh attempt
             # usually succeeds, and a long goal loop must not surface that as a hard failure.
             time.sleep(0.4 * (attempt + 1))
+            continue
+        # The router can also *succeed* while drawing a wire that shorts two nets (seen as two
+        # PWR_FLAGs on one net). Verify the netlist really matches before accepting the sheet.
+        if _netlist_matches(out, nets):
+            return result
+        last_error = EngineError(
+            "SchematicGeneration",
+            "skidl drew a schematic whose nets do not match the requested connections "
+            f"(attempt {attempt + 1}/8); retrying",
+        )
+        time.sleep(0.3 * (attempt + 1))
     assert last_error is not None
     raise last_error
+
+
+def _netlist_matches(out: Path, nets: list[NetSpec]) -> bool:
+    """Whether every requested net is intact and no two requested nets were merged."""
+    try:
+        from .schematic import Schematic
+
+        doc = Schematic.load(out)
+        by_pin: dict[tuple[str, str], str] = {}
+        for name, members in doc.nets().items():
+            for member in members:
+                by_pin[(member["ref"], str(member["pin"]))] = name
+        groups: list[str] = []
+        for net in nets:
+            names = {by_pin.get((ref, str(number))) for ref, number in net.pins}
+            if not names or None in names or len(names) != 1:
+                return False
+            groups.append(next(iter(names)))
+        if len(set(groups)) != len(groups):
+            return False
+        # Each net's PWR_FLAG must sit on that net. skidl sometimes wires a later flag to an
+        # earlier net, which leaves the component netlist intact but ERC with two power outputs
+        # on one net (and the other undriven).
+        from .layout import _alias_nets, _power_nets
+
+        power = _power_nets(doc, _alias_nets(doc))
+        flags = sorted((p for p in doc.placements() if p.reference.startswith("#FLG")),
+                       key=lambda p: p.reference)
+        if len(flags) != len(nets):
+            return False
+        for flag in flags:
+            try:
+                index = int(flag.reference[4:]) - 1
+            except ValueError:
+                return False
+            if index < 0 or index >= len(nets):
+                return False
+            net = doc.pin_net(flag, "1") or power.get((flag.reference, "1"))
+            if net is None or str(net).lstrip("/") != nets[index].name:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def _run_once(payload: dict[str, Any], out: Path, env: dict[str, str], timeout: float) -> GenerationResult:
@@ -288,11 +342,13 @@ for item in spec["nets"]:
         net += part[int(pin)] if pin.isdigit() else part[pin]
     nets[item["name"]] = net
 
-for name, net in list(nets.items()):
+for index, (name, net) in enumerate(list(nets.items()), start=1):
     if not net.get_pins():
         continue
     flag = Part("power", "PWR_FLAG", value="PWR_FLAG")
-    flag.ref = "#FLG%s" % (abs(hash(name)) % 10000)
+    # Deterministic references: hash() is randomised per process, and the resulting flag
+    # placement order occasionally made skidl draw a wire that shorted two nets.
+    flag.ref = "#FLG%d" % index
     flag[1] += net
 
 generate_schematic(tool=KICAD10)

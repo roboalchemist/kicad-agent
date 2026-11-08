@@ -57,6 +57,19 @@ async def test_draw_tidy_route_board_and_manufacture(services, new_project) -> N
     from kicad_harness.engine.schematic import Schematic
 
     # Schematic: every part and net made it, and tidying did not break connectivity.
+    from pydantic_ai.messages import ToolReturnPart
+
+    checks = []
+    for message in result.all_messages():
+        for part in getattr(message, "parts", []):
+            if isinstance(part, ToolReturnPart) and part.tool_name == "check":
+                payload = part.content[0] if isinstance(part.content, list) else part.content
+                if isinstance(payload, dict):
+                    checks.append(payload)
+    assert checks, "check never ran"
+    assert checks[-1]["erc"]["errors"] == 0, checks[-1]["erc"]
+    assert checks[-1]["layout"]["score"] == 0, checks[-1]["layout"]["counts"]
+
     doc = Schematic.load(ws.schematic_path)
     assert {p.reference for p in doc.placements() if not p.reference.startswith("#")} == {
         "R1", "R2", "C1", "C2",
@@ -68,6 +81,17 @@ async def test_draw_tidy_route_board_and_manufacture(services, new_project) -> N
     board_hash, _ = services.artifacts.materialize(ws.board_path.read_bytes())
     index = services.artifacts.index(board_hash)
     assert {"R1", "R2", "C1", "C2"} <= {f["ref"] for f in index["footprints"]}
+    # Parity: the same pins share the same nets on board and schematic.
+    board_nets: dict[str, set[tuple[str, str]]] = {}
+    for pad in index["pads"]:
+        net = (pad.get("net") or "").lstrip("/")
+        if net and not str(pad.get("ref", "")).startswith("#"):
+            board_nets.setdefault(net, set()).add((pad["ref"], str(pad["pad"])))
+    schematic_nets = {name: {(m["ref"], str(m["pin"])) for m in members}
+                      for name, members in doc.nets().items()}
+    for net in ("VIN", "VOUT", "GND"):
+        assert board_nets.get(net) == schematic_nets.get(net), (net, board_nets.get(net),
+                                                                schematic_nets.get(net))
 
     # Route one board connection with the track tool (Freerouting is an optional vendor extra,
     # so the golden flow uses the deterministic router every deployment has).
@@ -128,9 +152,7 @@ async def test_place_test_points_keeps_parity(services, new_project) -> None:
         result = await agent.run("add a ground test point", deps=deps_for(services, name))
     from pydantic_ai.messages import ToolReturnPart
 
-    debug = [(p.tool_name, str(p.content)[:300]) for m in result.all_messages()
-             for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)]
-    assert result.output == "done", debug
+    assert result.output == "done"
 
     from kicad_harness.engine.schematic import Schematic
 
