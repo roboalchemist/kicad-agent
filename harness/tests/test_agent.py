@@ -794,3 +794,27 @@ async def test_diff_versions_board_returns_two_aligned_images(services, design):
     meta = json.loads(diff.content[0])
     assert meta["scope"] == "board" and meta["summary"]["changed"] >= 1
     assert len([item for item in diff.content[1:] if isinstance(item, BinaryContent)]) == 2
+
+
+async def test_adversarial_audit_fails_closed_when_the_judge_fails(services, design, monkeypatch):
+    """A broken judge must never look like a completed design."""
+    from kicad_harness.agent import agent as agent_mod
+    from kicad_harness.agent import judge as judge_mod
+
+    name, ws = design
+
+    async def fake_facts(ctx):
+        return {"brief": "build it", "evaluation": {"criteria": []}, "board": False}
+
+    async def broken(facts, model, **kwargs):
+        return judge_mod.JudgeVerdict(results=[], mutations=judge_mod.mutations(),
+                                      error="judge failed: TimeoutError")
+
+    monkeypatch.setattr(agent_mod, "_judge_facts", fake_facts)
+    monkeypatch.setattr(judge_mod, "assess", broken)
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(deps=deps_for(services, name))
+    complete, gaps = await agent_mod._adversarial_audit(ctx, object())
+    assert complete is False
+    assert "judge failed" in gaps

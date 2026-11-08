@@ -363,7 +363,7 @@ def describe_tools(descriptions: dict[str, str] | None = None) -> list[dict[str,
 
 
 def settings_payload(descriptions: dict[str, str] | None = None, model: str | None = None) -> dict[str, Any]:
-    from . import knowledge
+    from . import judge, knowledge
 
     return {
         "model": model,
@@ -373,6 +373,7 @@ def settings_payload(descriptions: dict[str, str] | None = None, model: str | No
         "guidance": GUIDANCE,
         "playbooks": {phase: knowledge.digest(phase) for phase in ("bom", "schematic", "board")},
         "references": knowledge.index(),
+        "rules": judge.coverage(),
     }
 
 def phase_instructions(phase: str) -> str:

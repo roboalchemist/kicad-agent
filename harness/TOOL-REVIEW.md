@@ -179,6 +179,7 @@ thermal), plus knowledge search.
 | Golden regression suite | **done** — bundled `tests/test_golden_flow.py` runs draw → tidy → route → board → track → manufacturing on a four-part design, plus test-point parity; no live workspace needed. |
 | UI tool examples / project management | **done** — examples and failure modes on the tool page; projects page rename, duplicate and confirm-gated delete. |
 | Visual inspection & measurement | **done** — `inspect` (cropped, annotated, calibrated board/schematic), `measure_clearance` (nets/entities/region + rule), `probe` (point hit-test), `silkscreen_check`, `courtyard_check`, and `diff_versions(scope="board")` with two aligned images. |
+| Adversarial judge | **done** — `agent/judge.py`: rule ledger/coverage (474 sections, 15 auto + 14 rubric), measured auto results, six mutation detectors, separate reviewer, computed `complete`, fail-closed errors, `HARNESS_JUDGE_MODEL`, and a hook that clears a verdict when the design changes. |
 
 ### Remaining documented limits
 

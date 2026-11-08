@@ -53,6 +53,8 @@ class DesignState(BaseModel):
     goal: GoalStatus | None = None
     last_render: RenderInfo | None = None
     playbook_phase: str | None = None
+    judge_complete: bool | None = None
+    judge_findings: list[str] = Field(default_factory=list)
     highlight: Highlight | None = None
     selection: dict[str, Any] | None = None
     viewing: str | None = None

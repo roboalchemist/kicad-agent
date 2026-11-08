@@ -299,13 +299,11 @@ async def _adversarial_audit(ctx: RunContext[HarnessDeps], model: Any = None) ->
     Returns ``(complete, summary)``. The reviewer is a separate agent with adversarial
     instructions, so it is not grading the working agent's own summary.
     """
-    from pydantic_ai import Agent as _Agent
-
+    from kicad_harness.agent import judge as judge_mod
     from kicad_harness.agent import models as model_catalog
-    from kicad_harness.agent.audit import AUDIT_INSTRUCTIONS, AuditResult, render_inventory, summarise
 
     # A scripted/test model cannot review anything, and a real review would make network calls
-    # inside tests; only real runs get audited.
+    # inside tests; only real runs get judged.
     if type(model).__name__ in ("FunctionModel", "TestModel"):
         return True, ""
 
@@ -313,32 +311,104 @@ async def _adversarial_audit(ctx: RunContext[HarnessDeps], model: Any = None) ->
     ws = _ws(ctx)
     brief = ws.brief() or (ws.goal() or {}).get("summary")
     if not brief:
-        return True, ""  # nothing was asked for, so nothing to audit against
+        return True, ""  # nothing was asked for, so nothing to judge against
 
-    facts = await asyncio.to_thread(_parts_facts, ctx)
-    evaluation = await _evaluate(ctx)
-    inventory = {
-        "brief": brief,
-        "parts_on_board": facts["board_refs"],
-        "parts_in_schematic": facts["schematic_refs"],
-        "missing_from_schematic": facts["missing_from_schematic"],
-        "missing_from_board": facts["missing_from_board"],
-        "goal_criteria": [
-            {"id": c["id"], "passed": c["passed"], "detail": c["detail"]}
-            for c in evaluation.get("criteria", [])
-        ],
-    }
-    reviewer = _Agent(
-        model_catalog.resolve(current_model()),
-        output_type=AuditResult,
-        instructions=AUDIT_INSTRUCTIONS,
-    )
     try:
-        result = await reviewer.run(render_inventory(brief, inventory))
+        facts = await _judge_facts(ctx)
+    except Exception as exc:
+        return False, f"the judge could not read the design: {_engine_error_text(exc)}"
+
+    judge_model = model
+    configured = getattr(svc.config, "judge_model", "")
+    if configured:
+        try:
+            judge_model = model_catalog.resolve(configured)
+        except Exception:
+            judge_model = model
+    verdict = await judge_mod.assess(facts, judge_model, reviewer=None)
+    st = ctx.deps.state
+    st.judge_complete = bool(verdict.complete)
+    st.judge_findings = verdict.findings[:20]
+    if verdict.complete:
+        return True, ""
+    return False, judge_mod.summarise(verdict)
+
+async def _judge_facts(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
+    """The evidence packet: measured facts only, never the worker's claims."""
+    from kicad_harness.agent import audit
+    from kicad_harness.engine import balance, design_rules, heights, manufacturing, qa, si
+
+    svc = ctx.deps.services
+    ws = _ws(ctx)
+    evaluation = await _evaluate(ctx)
+    parts = await asyncio.to_thread(audit.design_parts, svc, ws)
+    facts: dict[str, Any] = {
+        "brief": ws.brief() or (ws.goal() or {}).get("summary"),
+        "phase": ws.phase(),
+        "board": ws.board_path.is_file(),
+        "evaluation": evaluation,
+        "parts": parts,
+        "rules": None,
+        "manufacturing": None,
+        "heights": None,
+        "via_stubs": None,
+        "silk": None,
+        "courtyard": None,
+        "test_coverage": None,
+        "copper_balance": None,
+        "waivers": _judge_waivers(ws),
+    }
+    if not ws.board_path.is_file():
+        return facts
+    board_hash, index = await _working(ctx)
+    rules = await asyncio.to_thread(design_rules.load, ws)
+    violations = await asyncio.to_thread(design_rules.violations, index, rules)
+    facts.update({
+        "rules": {
+            "count": len(violations),
+            "violations": violations[:10],
+            "netclasses": rules.get("netclasses"),
+            "stackup": rules.get("stackup"),
+        },
+        "manufacturing": await asyncio.to_thread(manufacturing.status, ws),
+        "heights": await asyncio.to_thread(lambda: heights.report(index, heights.load(ws))),
+        "via_stubs": await asyncio.to_thread(si.report, index, rules),
+        "silk": await asyncio.to_thread(qa.silkscreen, index),
+        "courtyard": await asyncio.to_thread(qa.courtyards, index),
+        "test_coverage": balance.test_coverage(index),
+        "copper_balance": balance.report(index),
+        "drc_counts": await asyncio.to_thread(lambda: svc.artifacts.drc(board_hash).get("counts", {})),
+        "waivers": _judge_waivers(ws),
+    })
+    return facts
+
+
+def _judge_waivers(ws) -> dict[str, Any]:
+    """Human-authored waivers only; the agent cannot sign away a rule."""
+    import datetime
+
+    path = Path(ws.path) / "judge_waivers.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return True, ""  # a broken reviewer must not block the loop
-    verdict: AuditResult = result.output
-    return verdict.complete, summarise(verdict)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, Any] = {}
+    today = datetime.date.today()
+    for rule_id, entry in data.items():
+        if not isinstance(entry, dict) or entry.get("author") == "agent":
+            continue
+        expires = entry.get("expires")
+        if expires:
+            try:
+                if datetime.date.fromisoformat(str(expires)) < today:
+                    continue
+            except ValueError:
+                continue
+        out[str(rule_id)] = entry
+    return out
+
 
 def _trailers(ctx: RunContext[HarnessDeps], tool: str) -> dict[str, str]:
     trailers = {"Harness-Tool": tool}
@@ -599,6 +669,33 @@ def _steering_hooks() -> Hooks:
 
     return hooks
 
+_JUDGE_READ_ONLY = {
+    "check", "inspect", "render", "query", "measure", "measure_clearance", "probe",
+    "get_design", "list_reviews", "list_versions", "diff_versions", "read_reference",
+    "read_part_datasheet", "find_parts", "find_footprints", "silkscreen_check",
+    "courtyard_check", "match_length", "export_manufacturing",
+}
+
+
+def _judge_hooks() -> Hooks:
+    """Invalidate a judge verdict as soon as the design changes.
+
+    A verdict is tied to the artifacts it reviewed. Without this, the UI (and a later stop
+    decision) could show a green judge from before an edit. The hook is deliberately conservative:
+    every tool that is not known read-only clears the last verdict.
+    """
+    hooks = Hooks()
+
+    @hooks.on.after_tool_execute
+    async def invalidate(ctx: RunContext[HarnessDeps], *, call, tool_def, args, result):
+        if ctx.deps is not None and call.tool_name not in _JUDGE_READ_ONLY:
+            ctx.deps.state.judge_complete = None
+            ctx.deps.state.judge_findings = []
+        return result
+
+    return hooks
+
+
 def _center_of(entities: list[dict]) -> tuple[float, float, float]:
     """Centre and a sensible view size (mm) for a set of resolved entities."""
     xs: list[float] = []
@@ -815,6 +912,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             Thinking(effort=thinking),
             ProcessHistory(_keep_recent_images),
             _steering_hooks(),
+            _judge_hooks(),
         ],
         retries={"tools": 5, "output": 60},
         model_settings=ModelSettings(max_tokens=max_tokens),

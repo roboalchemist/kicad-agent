@@ -610,6 +610,17 @@ These texts are not just documentation; they are applied to every run:
   list whose first element is that envelope and whose remaining elements are attachments.
 - Goal criteria include `manufacturing`, `layout_metric` and `height`, evaluated from the same
   facts the server and CLI compute.
+- `agent/judge.py` is the adversarial gate. It keeps a rule ledger (474 bundled sections, with 15
+  executable rules and 14 rubric rules), evaluates the executable ones from the same facts as
+  `check`, runs a separate reviewer for the rubric rules, and runs a six-case mutation suite
+  against the detectors. `JudgeVerdict.complete` is computed: any measured failure, any mandatory
+  unmeasured rule, or any missed mutation blocks; the reviewer never supplies a completion flag.
+  The reviewer output is JSON text parsed into Pydantic models because some providers reject the
+  forced tool choice Pydantic AI uses for native structured output.
+- `_adversarial_audit` is fail-closed: a judge error is a blocker, not a pass. `HARNESS_JUDGE_MODEL`
+  can point the judge at a different model; `state.judge_complete`/`judge_findings` expose the last
+  verdict to the UI. A `_judge_hooks` capability clears that verdict after any non-read-only tool,
+  so a stale green result cannot survive an edit.
 - `engine/heights.py` stores per-part heights and the enclosure, and reports over-height and
   unmeasured parts; `engine/si.py` estimates through-via stubs against
   `pcb-high-speed#Via Stubs & Back-Drilling`.

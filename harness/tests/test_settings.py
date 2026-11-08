@@ -101,6 +101,7 @@ async def test_settings_include_playbooks_and_the_reference_library(services) ->
         assert len(body["playbooks"][phase]) > 500, phase
         assert ".agents/" in body["playbooks"][phase], phase
     assert "read_reference" in {tool["name"] for tool in body["tools"]}
+    assert body["rules"]["sections"] > 400 and body["rules"]["auto"] > 0
 
 
 def test_bundled_knowledge_matches_the_repo_rules() -> None:

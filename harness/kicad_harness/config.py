@@ -38,6 +38,8 @@ class Config:
     java: Path | None = None
     freerouting_jar: Path | None = None
     model: str = field(default_factory=lambda: os.environ.get("HARNESS_MODEL", "anthropic:claude-sonnet-5-5"))
+    # A separate model for the adversarial judge; empty means use the working model.
+    judge_model: str = field(default_factory=lambda: os.environ.get("HARNESS_JUDGE_MODEL", ""))
     # Extra models the UI offers, comma separated in HARNESS_MODELS. The configured model is
     # always offered as well; DEFAULTS below are the routes verified with this project.
     models: list[str] = field(
