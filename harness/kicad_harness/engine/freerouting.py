@@ -7,7 +7,9 @@ and with its settings and logs in a temporary user-data directory instead of ~/L
 
 from __future__ import annotations
 
+import fnmatch
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -48,8 +50,71 @@ def command(config: Config, dsn: Path, ses: Path, timeout_s: float, passes: int 
     return cmd
 
 
+def _class_blocks(text: str, netclasses: dict[str, Any] | None) -> str:
+    """Split the KiCad default DSN class so Freerouting routes power at its real width.
+
+    KiCad exports every net in one ``kicad_default`` class, even when the project declares net
+    classes; Freerouting honours the DSN, not the project, so power traces come back at the
+    board default. This rewrites the class list with the declared widths and clearances.
+    """
+    if not netclasses:
+        return text
+    marker = "(class kicad_default"
+    start = text.find(marker)
+    if start == -1:
+        return text
+    depth = 0
+    end = start
+    for end in range(start, len(text)):
+        if text[end] == "(":
+            depth += 1
+        elif text[end] == ")":
+            depth -= 1
+            if depth == 0:
+                end += 1
+                break
+    block = text[start:end]
+    via = re.search(r'\(use_via\s+"([^"]+)"\)', block)
+    if not via:
+        return text
+    head = block.split("(circuit", 1)[0]
+    tokens = head.replace("(class", " ").replace("kicad_default", " ").split()
+    nets = [token for token in tokens if token and token not in ("(", ")")]
+    defaults = netclasses.get("Default") or {}
+    default_width = round(float(defaults.get("width") or 0.2) * 1000)
+    default_clearance = round(float(defaults.get("clearance") or 0.2) * 1000)
+    assigned: dict[str, list[str]] = {}
+    remaining: list[str] = []
+    for net in nets:
+        chosen = None
+        for name, spec in netclasses.items():
+            if name == "Default" or not spec.get("explicit"):
+                continue
+            if any(fnmatch.fnmatchcase(net, pattern) for pattern in (spec.get("nets") or [])):
+                chosen = name
+                break
+        if chosen:
+            assigned.setdefault(chosen, []).append(net)
+        else:
+            remaining.append(net)
+
+    def make(name: str, members: list[str], width: int, clearance: int) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
+        return ("(class %s %s\n      (circuit\n        (use_via \"%s\")\n      )\n"
+                "      (rule\n        (width %d)\n        (clearance %d)\n      )\n    )"
+                % (safe, " ".join(members), via.group(1), width, clearance))
+
+    rebuilt = [make("kicad_default", remaining, default_width, default_clearance)]
+    for name, members in assigned.items():
+        spec = netclasses[name]
+        rebuilt.append(make(name, members, round(float(spec.get("width") or 0.2) * 1000),
+                            round(float(spec.get("clearance") or 0.2) * 1000)))
+    return text[:start] + "\n    ".join(rebuilt) + text[end:]
+
+
 def autoroute(engine: Engine, board: str | os.PathLike[str], config: Config | None = None,
-              timeout_s: float = 120, passes: int | None = None) -> dict[str, Any]:
+              timeout_s: float = 120, passes: int | None = None,
+              netclasses: dict[str, Any] | None = None) -> dict[str, Any]:
     """Route ``board`` in place with Freerouting and report the result.
 
     Exports a DSN (existing tracks go in as unfixed wiring, so the caller rips up first if
@@ -74,6 +139,9 @@ def autoroute(engine: Engine, board: str | os.PathLike[str], config: Config | No
         dsn, ses, userdata = tmp / "board.dsn", tmp / "board.ses", tmp / "userdata"
         userdata.mkdir()
         engine.export_dsn(board_path, dsn)
+        if netclasses:
+            dsn.write_text(_class_blocks(dsn.read_text(encoding="utf-8"), netclasses),
+                           encoding="utf-8")
         env = dict(os.environ, FREEROUTING__USER_DATA_PATH=str(userdata), **_ENV)
         cmd = command(cfg, dsn, ses, timeout_s, passes)
         try:

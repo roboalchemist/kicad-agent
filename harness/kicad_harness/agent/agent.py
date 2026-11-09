@@ -1187,7 +1187,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         board_hash, _ = await _working(ctx)
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
         evaluation = await _evaluate(ctx)
-        from kicad_harness.engine import balance, design_rules, heights, manufacturing, si
+        from kicad_harness.engine import balance, design_rules, heights, manufacturing, placement, si
 
         index = await asyncio.to_thread(svc.artifacts.index, board_hash)
         rules = await asyncio.to_thread(design_rules.load, ws)
@@ -1236,6 +1236,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             "manufacturing": mfg,
             "copper_balance": balance.report(index),
             "test_coverage": balance.test_coverage(index),
+            "placement": placement.report(index),
             "heights": height_report,
             "via_stubs": stub_report,
             "schematic": schematic_report,
@@ -1654,12 +1655,15 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
     @agent.tool(sequential=True)
     async def autoroute(ctx: RunContext[HarnessDeps], timeout_s: int = 120) -> ToolReturn:
         """Route every unrouted connection with Freerouting. Existing tracks are kept; rip up first to re-route."""
+        from kicad_harness.engine import design_rules
         from kicad_harness.engine.freerouting import autoroute as run_freerouting
 
         svc = ctx.deps.services
+        netclasses = design_rules.load(_ws(ctx)).get("netclasses") or {}
         return await _edit(
             ctx, "autoroute", "Autoroute with Freerouting",
-            lambda b: run_freerouting(svc.engine, b, svc.config, timeout_s=timeout_s),
+            lambda b: run_freerouting(svc.engine, b, svc.config, timeout_s=timeout_s,
+                                      netclasses=netclasses),
             risky=True,
         )
 

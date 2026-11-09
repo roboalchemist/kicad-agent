@@ -235,6 +235,10 @@ class Engine:
         """Move ``ref``'s reference designator text to (x, y) in board coordinates."""
         return self.call("move_reference_text", board, ref=ref, x=x, y=y)
 
+    def set_track_width(self, board: str | os.PathLike[str], nets: Sequence[str],
+                        width: float) -> dict:
+        return self.call("set_track_width", board, nets=list(nets), width=float(width))
+
     def delete_tracks(self, board: str | os.PathLike[str], nets: Sequence[str] | str | None = None,
                       uuids: Sequence[str] | None = None) -> dict:
         """Delete tracks/vias on ``nets`` and/or by ``uuids``; with neither, all of them."""
@@ -286,11 +290,13 @@ class Engine:
 
     def add_zone(self, board: str | os.PathLike[str], net: str, layer: str,
                  polygon: Sequence[Sequence[float]] | None = None, clearance: float = 0.3,
-                 min_width: float = 0.25, margin: float = 0.5) -> dict:
+                 min_width: float = 0.25, margin: float = 0.5,
+                 thermal: bool = True) -> dict:
         """Add and fill a copper zone (default outline: board outline inset by ``margin``)."""
         return self.call("add_zone", board, net=net, layer=layer,
                          polygon=None if polygon is None else [list(p) for p in polygon],
-                         clearance=clearance, min_width=min_width, margin=margin)
+                         clearance=clearance, min_width=min_width, margin=margin,
+                         thermal=thermal)
 
     def refill_zones(self, board: str | os.PathLike[str]) -> dict:
         """Refill all zones. ``{"zones": n}``."""

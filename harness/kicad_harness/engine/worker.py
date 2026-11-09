@@ -686,6 +686,23 @@ def move_reference_text(board, ref, x, y):
 
 
 @rpc
+def set_track_width(board, nets, width):
+    """Set the width of every track on ``nets`` (used after a net-class change)."""
+    names = {_net_name(n) for n in _as_list(nets, "nets")}
+    width = _num(width, "width", positive=True)
+
+    def edit(b):
+        changed = 0
+        for track in b.GetTracks():
+            if track.GetClass() == "PCB_TRACK" and track.GetNetname() in names:
+                track.SetWidth(_iu(width))
+                changed += 1
+        return {"changed": changed, "width": width}
+
+    return _edit(board, edit, refill=False)
+
+
+@rpc
 def move_reference_texts(board, moves):
     """Move several reference designators in one load/save (silkscreen placement)."""
     if not isinstance(moves, list):
@@ -919,7 +936,8 @@ def set_outline_polygon(board, points):
 
 
 @rpc
-def add_zone(board, net, layer, polygon=None, clearance=0.3, min_width=0.25, margin=0.5):
+def add_zone(board, net, layer, polygon=None, clearance=0.3, min_width=0.25, margin=0.5,
+             thermal=True):
     """Add a copper zone (default: the board outline inset by ``margin``) and fill it."""
     pts = None if polygon is None else _points(polygon, "polygon", 3)
     clearance = _num(clearance, "clearance", nonneg=True)
@@ -949,6 +967,8 @@ def add_zone(board, net, layer, polygon=None, clearance=0.3, min_width=0.25, mar
             shape.Append(_iu(cx), _iu(cy))
         z.SetLocalClearance(_iu(clearance))
         z.SetMinThickness(_iu(min_width))
+        if not thermal:
+            z.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
         b.Add(z)
         return {"uuid": z.m_Uuid.AsString()}
 

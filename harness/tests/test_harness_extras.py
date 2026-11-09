@@ -320,3 +320,41 @@ def test_via_stub_is_estimated_for_a_through_via_on_a_four_layer_board() -> None
     assert report["net_stub_mm"]["CLK"] == 1.6
     index["vias"] = [{"uuid": "v2", "net": "CLK", "type": "micro"}]
     assert si.report(index, rules)["ok"] is True
+
+
+def test_board_placement_metrics_report_fill_and_largest_gap() -> None:
+    from kicad_harness.engine import placement
+
+    index = {"board": {"edge_bbox": [0, 0, 40, 30]}, "footprints": [
+        {"ref": "A", "bbox": [0, 0, 10, 10]},
+        {"ref": "B", "bbox": [20, 20, 10, 5]},
+    ]}
+    report = placement.report(index)
+    assert report["component_utilisation"] == round(150 / 1200, 3)
+    assert report["largest_horizontal_gap_mm"] == 10.0
+    assert report["largest_gap_y"] == [10.0, 20.0]
+    assert report["content_width_mm"] == 30.0 and report["content_height_mm"] == 25.0
+
+
+def test_dsn_class_split_puts_power_on_its_own_width() -> None:
+    from kicad_harness.engine.freerouting import _class_blocks
+
+    text = '''(network
+    (class kicad_default +5V GND DRV1 P20V
+      (circuit
+        (use_via "Via[0-1]_600:300_um")
+      )
+      (rule
+        (width 200)
+        (clearance 200)
+      )
+    )
+  )'''
+    out = _class_blocks(text, {
+        "Default": {"width": 0.2, "clearance": 0.2},
+        "POWER": {"nets": ["+5V", "GND", "P20V"], "width": 1.0,
+                  "clearance": 0.3, "explicit": True},
+    })
+    assert "(class POWER +5V GND P20V" in out
+    assert "(width 1000)" in out and "(clearance 300)" in out
+    assert "(class kicad_default DRV1" in out
