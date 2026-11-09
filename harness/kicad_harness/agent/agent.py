@@ -1670,26 +1670,90 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         board_hash, index = await _working(ctx)
         footprints = sorted(index.get("footprints", []), key=lambda fp: fp.get("ref", ""))
 
+        # Collision model: every part body, every pad (text over a pad is a real finding), and
+        # the text already placed in this pass. The old model only knew part bboxes, so it
+        # declared an over-pad reference "free" and moved nothing.
+        part_boxes = [(float(b[0]), float(b[1]), float(b[0]) + float(b[2]),
+                       float(b[1]) + float(b[3])) for b in (fp["bbox"] for fp in footprints)]
+        pad_boxes: list[tuple[float, float, float, float]] = []
+        for pad in index.get("pads", []):
+            poly = pad.get("polygon") or []
+            if poly:
+                xs = [float(p[0]) for p in poly]
+                ys = [float(p[1]) for p in poly]
+                pad_boxes.append((min(xs), min(ys), max(xs), max(ys)))
+            else:
+                pad_boxes.append((float(pad["x"]) - float(pad.get("w") or 0) / 2,
+                                  float(pad["y"]) - float(pad.get("h") or 0) / 2,
+                                  float(pad["x"]) + float(pad.get("w") or 0) / 2,
+                                  float(pad["y"]) + float(pad.get("h") or 0) / 2))
+        ex, ey, ew, eh = index["board"]["edge_bbox"]
+
+        def inside(box) -> bool:
+            return (box[0] >= ex + 0.2 and box[1] >= ey + 0.2
+                    and box[2] <= ex + ew - 0.2 and box[3] <= ey + eh - 0.2)
+
+        def free(box, placed: list) -> bool:
+            if not inside(box):
+                return False
+            if any(_boxes_overlap(box, other) for other in part_boxes + pad_boxes + placed):
+                return False
+            return True
+
         def work(board) -> dict:
-            occupied = [tuple(fp["bbox"]) for fp in footprints]
+            placed: list[tuple[float, float, float, float]] = []
             moves: list[dict[str, float | str]] = []
             for fp in footprints:
                 x, y, w, h = fp["bbox"]
                 text = str(fp.get("ref") or "")
-                width = max(2.0, 1.15 * len(text))
-                candidates = [
-                    (x + w / 2 - width / 2, y - 1.4),        # above
-                    (x + w / 2 - width / 2, y + h + 1.4),    # below
-                    (x + w + 1.2, y + h / 2),                # right
-                    (x - width - 1.2, y + h / 2),            # left
-                ]
-                for cx, cy in candidates:
-                    box = (cx, cy - 1.0, cx + width, cy + 1.0)
-                    if any(_boxes_overlap(box, other) for other in occupied):
-                        continue
+                raw = fp.get("ref_text") or {}
+                tw = max(2.0, float((raw.get("bbox") or [0, 0, 0, 0])[2]) or 1.15 * len(text))
+                th = max(1.0, float((raw.get("bbox") or [0, 0, 0, 0])[3]) or 1.4)
+                raw_box = tuple(float(v) for v in (raw.get("bbox") or ()))
+                current = ((raw_box[0], raw_box[1], raw_box[0] + raw_box[2],
+                            raw_box[1] + raw_box[3]) if len(raw_box) == 4 else ())
+                # Keep the current label only if it is genuinely clear of pads and other text.
+                if len(current) == 4 and free(current, placed):
+                    placed.append(current)
+                    continue
+                chosen = None
+                for gap in (0.8, 1.4, 2.4, 3.6, 5.0):
+                    for cx, cy in (
+                        (x + w / 2, y - gap - th / 2),           # above
+                        (x + w / 2, y + h + gap + th / 2),       # below
+                        (x + w + gap + tw / 2, y + h / 2),       # right
+                        (x - gap - tw / 2, y + h / 2),           # left
+                    ):
+                        box = (cx - tw / 2, cy - th / 2, cx + tw / 2, cy + th / 2)
+                        if free(box, placed):
+                            chosen = (cx, cy, box)
+                            break
+                    if chosen:
+                        break
+                if chosen is None:
+                    # Dense rows have no room at the footprint edge. Walk outward from the
+                    # centre until a genuinely free label box appears.
+                    centre_x, centre_y = x + w / 2, y + h / 2
+                    for radius in range(6, 41, 2):
+                        for dx in (-radius, -radius / 2, 0, radius / 2, radius):
+                            for dy in (-radius, -radius / 2, 0, radius / 2, radius):
+                                if dx == 0 and dy == 0:
+                                    continue
+                                cx, cy = centre_x + float(dx), centre_y + float(dy)
+                                box = (cx - tw / 2, cy - th / 2, cx + tw / 2, cy + th / 2)
+                                if free(box, placed):
+                                    chosen = (cx, cy, box)
+                                    break
+                            if chosen:
+                                break
+                        if chosen:
+                            break
+                if chosen:
+                    cx, cy, box = chosen
                     moves.append({"ref": fp["ref"], "x": cx, "y": cy})
-                    occupied.append(box)
-                    break
+                    placed.append(box)
+                elif len(current) == 4:
+                    placed.append(current)  # no free spot; leave it where it was
             engine(ctx).call("move_reference_texts", board=board, moves=moves)
             return {"placed": len(moves), "footprints": len(footprints)}
 
@@ -1922,14 +1986,17 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         def work(board) -> dict:
             doc = _schematic(ctx, "Connector")
             existing = {p.reference for p in doc.placements() if p.reference.startswith("TP")}
+            used = set(existing)
+            counter = 1
             engine_obj = engine(ctx)
             added = []
-            for i, net in enumerate(nets):
-                ref = f"TP{1 + i}"
-                while ref in existing:
-                    i += 1
-                    ref = f"TP{1 + i}"
-                x = ex + 10 + i * 8
+            for slot, net in enumerate(nets):
+                while f"TP{counter}" in used:
+                    counter += 1
+                ref = f"TP{counter}"
+                used.add(ref)
+                counter += 1
+                x = ex + 10 + slot * 8
                 y = ey + eh - 8
                 doc.add_symbol(symbol, ref, x, y, value=net, footprint=footprint)
                 engine_obj.call("add_footprint", board=board, footprint=footprint, ref=ref,

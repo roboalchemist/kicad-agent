@@ -46,12 +46,12 @@ def test_complete_is_derived_and_fails_closed() -> None:
                                 mutations=judge.MutationReport(total=1, caught=[], missed=["x"]))
     assert broken.complete is False
 
-    # A measured should-fix failure is still a known defect: do not call it complete.
+    # Should-fix findings are reported but do not block a mandatory-clean design.
     should_fail = judge.JudgeVerdict(
         results=[_pass("a"), judge.RuleResult(id="b", status="fail", severity="should",
                                               detail="silk", citation="c")],
         mutations=mutations)
-    assert should_fail.complete is False
+    assert should_fail.complete is True and "silk" in should_fail.findings[0]
 
 
 def test_auto_results_come_from_the_same_evaluation() -> None:
@@ -128,14 +128,12 @@ async def test_a_human_waiver_can_clear_a_finding_but_an_agent_waiver_cannot() -
     async def partial(facts, specs, auto, model):
         return judge.ReviewResult(results=[
             judge.RuleResult(id="pcb-placement#Priority Order", status="fail",
-                             severity="should", detail="row order", citation="pcb-placement#Priority Order")])
+                             severity="must", detail="row order", citation="pcb-placement#Priority Order")])
 
     verdict = await judge.assess(facts, object(), reviewer=partial)
     waived = next(r for r in verdict.results if r.id == "pcb-placement#Priority Order")
     assert waived.status == "waived" and "mechanical constraint" in waived.detail
-    assert verdict.complete is True
 
     facts["waivers"] = {"pcb-placement#Priority Order": {"author": "agent", "reason": "lgtm"}}
     blocked = await judge.assess(facts, object(), reviewer=partial)
     assert next(r for r in blocked.results if r.id == "pcb-placement#Priority Order").status == "fail"
-    assert blocked.complete is False

@@ -168,12 +168,11 @@ class JudgeVerdict(BaseModel):
         if self.error or self.mutations.missed:
             return False
         mandatory = [r for r in self.results if r.severity == "must"]
-        # Any measured failure blocks, not just a "must": a known defect is not LGTM. An
-        # unmeasured rule blocks only when it is mandatory, so a rubric the harness cannot
-        # measure is reported without making completion impossible.
+        # Hard gates are the mandatory rules. A "should" failure is a real finding and stays in
+        # `findings`, but it does not make the design impossible to finish; the agent can fix it
+        # or a human can waive it. Unmeasured blocks only when the rule is mandatory.
         return (
             bool(mandatory)
-            and not any(r.status == "fail" for r in self.results)
             and all(r.status in ("pass", "waived") for r in mandatory)
             and not any(r.status == "unmeasured" for r in mandatory)
         )

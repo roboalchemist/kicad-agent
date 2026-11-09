@@ -613,8 +613,9 @@ These texts are not just documentation; they are applied to every run:
 - `agent/judge.py` is the adversarial gate. It keeps a rule ledger (474 bundled sections, with 15
   executable rules and 14 rubric rules), evaluates the executable ones from the same facts as
   `check`, runs a separate reviewer for the rubric rules, and runs a six-case mutation suite
-  against the detectors. `JudgeVerdict.complete` is computed: any measured failure, any mandatory
-  unmeasured rule, or any missed mutation blocks; the reviewer never supplies a completion flag.
+  against the detectors. `JudgeVerdict.complete` is computed: any mandatory failure or unmeasured mandatory rule, or any
+  missed mutation, blocks. Should-fix findings remain in `findings` for the UI and the agent, but
+  do not make completion impossible; a human waiver can clear them.
   The reviewer output is JSON text parsed into Pydantic models because some providers reject the
   forced tool choice Pydantic AI uses for native structured output.
 - `_adversarial_audit` is fail-closed: a judge error is a blocker, not a pass. `HARNESS_JUDGE_MODEL`

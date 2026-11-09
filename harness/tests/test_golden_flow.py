@@ -178,3 +178,38 @@ async def test_place_test_points_keeps_parity(services, new_project) -> None:
     assert refs <= {f["ref"] for f in index["footprints"]}, index["footprints"]
     pads = [p for p in index["pads"] if p["ref"] in refs]
     assert pads and any((p.get("net") or "").lstrip("/") == "GND" for p in pads), pads
+
+
+async def test_repeated_test_point_calls_use_new_references(services, new_project) -> None:
+    """Regression: the old loop reused TP4 in memory and failed after adding it once."""
+    if not _footprints_available(services.config):
+        pytest.skip("no KiCad footprint libraries on this machine")
+    name, ws = new_project
+    resistor = {"library": "Device", "symbol": "R", "value": "10k", "footprint": R_PACKAGE}
+    capacitor = {"library": "Device", "symbol": "C", "value": "100n", "footprint": C_PACKAGE}
+    script = Script([
+        [("generate_schematic", {
+            "parts": [{"ref": "R1", **resistor}, {"ref": "R2", **resistor},
+                      {"ref": "C1", **capacitor}, {"ref": "C2", **capacitor}],
+            "nets": [{"name": "VIN", "pins": ["R1.1", "C1.1"]},
+                     {"name": "VOUT", "pins": ["R1.2", "R2.1", "C2.1"]},
+                     {"name": "GND", "pins": ["R2.2", "C1.2", "C2.2"]}],
+        })],
+        [("start_board", {})],
+        [("place_test_points", {"nets": ["GND"]})],
+        [("place_test_points", {"nets": ["VIN", "VOUT", "GND"]})],
+        "done",
+    ])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("add test points twice", deps=deps_for(services, name))
+    assert result.output == "done"
+
+    from kicad_harness.engine.schematic import Schematic
+
+    refs = {p.reference for p in Schematic.load(ws.schematic_path).placements()
+            if p.reference.startswith("TP")}
+    assert refs == {"TP1", "TP2", "TP3", "TP4"}, refs
+    board_hash, _ = services.artifacts.materialize(ws.board_path.read_bytes())
+    board_refs = {f["ref"] for f in services.artifacts.index(board_hash)["footprints"]}
+    assert refs <= board_refs, refs - board_refs
