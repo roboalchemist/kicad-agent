@@ -2044,18 +2044,18 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
     async def set_stackup(
         ctx: RunContext[HarnessDeps], layers: int, material: str = "FR4",
         thickness: float = 1.6, impedance: dict | None = None,
-        er: float = 4.4, dielectric_height: float = 0.2,
+        er: float = 4.4, dielectric_height: float = 0.2, copper_weight: float = 1.0,
     ) -> ToolReturn:
         """Declare the stackup (copper layers, material, thickness, er, dielectric height,
-        optional impedance map). `check` compares the declared copper count with the board and
-        flags traces whose width misses the class impedance by >15%."""
+        copper weight in oz, optional impedance map). `check` compares the declared copper count
+        with the board and flags traces whose width misses the class impedance by >15%."""
         from kicad_harness.engine import design_rules
 
         ws = _ws(ctx)
         rules = await asyncio.to_thread(design_rules.load, ws)
         rules["stackup"] = {"layers": layers, "material": material, "thickness": thickness,
                             "impedance": impedance or {}, "er": er,
-                            "dielectric_height": dielectric_height}
+                            "dielectric_height": dielectric_height, "copper_weight": copper_weight}
         await asyncio.to_thread(design_rules.save, ws, rules)
         applied = False
         if ws.board_path.is_file():
