@@ -311,7 +311,7 @@ def auto_results(facts: dict[str, Any]) -> list[RuleResult]:
     stubs = facts.get("via_stubs")
     if stubs is not None:
         out.append(_result("highspeed.via_stub", bool(stubs.get("ok")),
-                           measured=stubs.get("max_mm"), limit=stubs.get("limit_mm"),
+                           measured=stubs.get("max_mm"), limit=None,
                            evidence=[f"{stubs.get('count')} vias"],
                            detail=("stubs within limit" if stubs.get("ok")
                                    else f"{len(stubs.get('over') or [])} vias over the stub limit")))
