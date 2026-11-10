@@ -2724,7 +2724,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 items = await asyncio.to_thread(parts.categories, query)
                 return ToolReturn(return_value={"ok": True, "categories": items})
             if mpn or lcsc:
-                result = await asyncio.to_thread(parts.find_parts, mpn or "", lcsc)
+                result = await asyncio.to_thread(parts.check_part, mpn or "", lcsc)
                 result["ok"] = True
                 return ToolReturn(return_value=result)
             result = await asyncio.to_thread(

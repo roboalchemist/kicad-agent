@@ -818,3 +818,23 @@ async def test_adversarial_audit_fails_closed_when_the_judge_fails(services, des
     complete, gaps = await agent_mod._adversarial_audit(ctx, object())
     assert complete is False
     assert "judge failed" in gaps
+
+
+async def test_find_parts_verifies_one_part_by_mpn(services, design, monkeypatch):
+    """Regression: the mpn/lcsc branch called a non-existent parts.find_parts."""
+    from kicad_harness.engine import parts as parts_mod
+
+    name, ws = design
+
+    def fake(mpn, lcsc=None):
+        return {"mpn": mpn, "lcsc": lcsc, "checks": {"jlcpcb": {"stocked": True}}}
+
+    monkeypatch.setattr(parts_mod, "check_part", fake)
+    script = Script([[("find_parts", {"mpn": "NE555DR"})], "done"])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("verify a part", deps=deps_for(services, name))
+    assert result.output == "done"
+    payload = next(p for m in result.all_messages() for p in getattr(m, "parts", [])
+                   if isinstance(p, ToolReturnPart) and p.tool_name == "find_parts").content
+    assert payload["ok"] is True and payload["mpn"] == "NE555DR"

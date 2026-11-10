@@ -310,7 +310,7 @@ EXAMPLES: dict[str, str] = {
     "check": "check(detail=True)",
     "render": "render(kind='schematic')",
     "find_parts": "find_parts(query='NE555', basic_only=True)",
-    "read_part_datasheet": "read_part_datasheet(mpn='NE555DR', lcsc='C111899')",
+    "read_part_datasheet": "read_part_datasheet(mpn='NE555DR', pages='1-6')",
     "generate_schematic": "generate_schematic(parts=[...], nets=[...])",
     "label_net": "label_net(target='U1.3', net='GND')",
     "connect_pins": "connect_pins(a='R1.2', b='C1.1', net='FILTER')",
