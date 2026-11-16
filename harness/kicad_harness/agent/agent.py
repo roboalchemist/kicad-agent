@@ -2809,6 +2809,31 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return ToolReturn(return_value={"ok": True, "ref": ref, **entry})
 
     @agent.tool
+    async def search_datasheets(
+        ctx: RunContext[HarnessDeps], query: str = "", manufacturer: str | None = None,
+        category: str | None = None, package: str | None = None,
+        has_pdf: bool | None = None, attr: list[str] | None = None,
+        limit: int = 15, offset: int = 0,
+    ) -> ToolReturn:
+        """Search the i2cdb datasheet catalogue directly (not the JLCPCB catalogue).
+
+        `query` matches the MPN (case-sensitive); narrow with `manufacturer`, `category`,
+        `package`, `has_pdf` or `attr` pairs such as ["Output Voltage=5V"]. Results carry the
+        manufacturer slug and MPN needed by `read_part_datasheet`.
+        """
+        from kicad_harness.engine import parts
+
+        try:
+            result = await asyncio.to_thread(
+                parts.search_i2cdb, query, limit,
+                manufacturer=manufacturer, category=category, package=package,
+                has_pdf=has_pdf, attr=attr, offset=offset,
+            )
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        return ToolReturn(return_value={"ok": True, **result})
+
+    @agent.tool
     async def read_part_datasheet(
         ctx: RunContext[HarnessDeps], mpn: str, manufacturer: str | None = None, pages: str | None = "1-6"
     ) -> ToolReturn:

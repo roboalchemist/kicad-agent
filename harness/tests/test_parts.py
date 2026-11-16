@@ -93,3 +93,29 @@ def test_empty_result_explains_which_filter_emptied_it() -> None:
     reason = result["empty_reason"]
     assert reason["matching_any_stock"] > 0
     assert "basic_only=false" in reason["note"]
+
+
+def test_i2cdb_search_passes_filters_and_derives_pdf_state(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake(args, timeout=60):
+        captured["args"] = args
+        return {"total": 2, "has_more": False, "items": [
+            {"manufacturer": "ti", "manufacturer_name": "TI", "mpn": "A1",
+             "category": "PMIC", "category_slug": "pmic", "package": "SOIC-8",
+             "file_count": 1, "placeholder_count": 0},
+            {"manufacturer": "ti", "manufacturer_name": "TI", "mpn": "A2",
+             "category": "PMIC", "category_slug": "pmic", "package": "SOIC-8",
+             "file_count": 1, "placeholder_count": 1},
+        ]}
+
+    monkeypatch.setattr(parts, "_i2cdb", fake)
+    result = parts.search_i2cdb("A", 5, manufacturer="ti", package="SOIC-8",
+                                has_pdf=True, attr=["Output Voltage=5V"], offset=10)
+    args = captured["args"]
+    assert args[:2] == ["parts", "search"] and "A" in args
+    for flag in ("--manufacturer", "--package", "--has-pdf", "--attr", "--offset"):
+        assert flag in args
+    assert result["parts"][0]["id"] == "ti/A1"
+    assert result["parts"][0]["has_pdf"] is True
+    assert result["parts"][1]["has_pdf"] is False

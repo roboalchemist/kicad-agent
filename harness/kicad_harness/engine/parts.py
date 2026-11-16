@@ -301,23 +301,63 @@ def _token() -> str:
         return ""
 
 
-def search_i2cdb(mpn_prefix: str, limit: int = 20) -> dict[str, Any]:
-    """Manufacturer parts whose MPN starts with ``mpn_prefix`` (case-sensitive), with datasheet status."""
+def search_i2cdb(
+    mpn_prefix: str = "",
+    limit: int = 20,
+    *,
+    manufacturer: str | None = None,
+    category: str | None = None,
+    package: str | None = None,
+    has_pdf: bool | None = None,
+    attr: list[str] | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Search the i2cdb catalogue.
+
+    The positional query is a case-sensitive MPN substring/prefix; the other filters cover
+    manufacturer, category, package, datasheet presence and attribute pairs. At least one
+    criterion is required (i2cdb does not allow an unfiltered dump through this path).
+    """
     prefix = (mpn_prefix or "").strip()
-    if not prefix:
-        raise PartsError("give an MPN prefix to search, e.g. 'UCC287' (matching is case-sensitive)")
-    data = _i2cdb(["parts", "search", prefix, "--limit", str(min(limit, 50))])
+    if not any((prefix, manufacturer, category, package, has_pdf is not None, attr)):
+        raise PartsError("give an MPN prefix or a filter such as manufacturer/package/has_pdf")
+    args = ["parts", "search"]
+    if prefix:
+        args.append(prefix)
+    if manufacturer:
+        args += ["--manufacturer", manufacturer]
+    if category:
+        args += ["--category", category]
+    if package:
+        args += ["--package", package]
+    if has_pdf is True:
+        args.append("--has-pdf")
+    elif has_pdf is False:
+        args.append("--no-pdf")
+    for pair in attr or []:
+        args += ["--attr", pair]
+    args += ["--limit", str(max(1, min(int(limit), 500)))]
+    if offset:
+        args += ["--offset", str(max(0, int(offset)))]
+    data = _i2cdb(args)
     items = data.get("items", []) if isinstance(data, dict) else []
     return {
         "source": "i2cdb",
         "query": prefix,
         "total": (data or {}).get("total", len(items)),
+        "has_more": (data or {}).get("has_more"),
         "parts": [
             {
+                "id": f"{i.get('manufacturer')}/{i.get('mpn')}",
                 "mpn": i.get("mpn"),
                 "manufacturer": i.get("manufacturer"),
+                "manufacturer_name": i.get("manufacturer_name"),
                 "category": i.get("category"),
-                "has_pdf": i.get("has_pdf"),
+                "category_slug": i.get("category_slug"),
+                "package": i.get("package"),
+                "has_pdf": bool(i.get("file_count") or 0) > int(i.get("placeholder_count") or 0),
+                "file_count": i.get("file_count"),
+                "placeholder_count": i.get("placeholder_count"),
             }
             for i in items
         ],

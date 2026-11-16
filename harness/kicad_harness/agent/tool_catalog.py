@@ -34,6 +34,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "read_reference": ("global", "Pull the full PCB rule/reference for a topic when the decision is not obvious."),
     # -- BOM / sourcing -------------------------------------------------------------------
     "find_parts": ("bom", "Search by part number or category; prefer basic parts with stock."),
+    "search_datasheets": ("bom", "Search the i2cdb datasheet catalogue by MPN, manufacturer, package, category, PDF presence or attributes."),
     "read_part_datasheet": ("bom", "Confirm a pinout or rating; never invent pin numbers."),
     "set_bom_alternates": ("bom", "Record second-source LCSC codes; they appear in the manufacturing BOM."),
     "set_part_lifecycle": ("bom", "Record MSL, ESD class, lead time and lifecycle for the BOM."),
@@ -109,7 +110,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Ratings & derating",
          "detail": "Confirm voltage/current/temperature margins from the datasheet - not from the "
                    "catalogue title.",
-         "tools": ["read_part_datasheet", "find_parts"], "gate": "derating rules met",
+         "tools": ["search_datasheets", "read_part_datasheet", "find_parts"], "gate": "derating rules met",
          "ref": "pcb-bom-components#Component Derating Guidelines"},
         {"step": "Package & assembly",
          "detail": "Package choice, MSL, ESD and pick-and-place compatibility for the assembler.",
@@ -139,7 +140,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Source the parts first",
          "detail": "Run the sourcing workflow; a part without a stocked, footprinted identity will "
                    "fail later.",
-         "tools": ["find_parts", "find_parts", "read_part_datasheet"],
+         "tools": ["find_parts", "search_datasheets", "read_part_datasheet"],
          "gate": "all parts stocked and footprinted",
          "ref": "pcb-bom-components#Footprint Verification Process"},
         {"step": "Net classes & naming",
@@ -310,6 +311,7 @@ EXAMPLES: dict[str, str] = {
     "check": "check(detail=True)",
     "render": "render(kind='schematic')",
     "find_parts": "find_parts(query='NE555', basic_only=True)",
+    "search_datasheets": "search_datasheets(manufacturer='ti', package='SOIC-8', has_pdf=True)",
     "read_part_datasheet": "read_part_datasheet(mpn='NE555DR', pages='1-6')",
     "generate_schematic": "generate_schematic(parts=[...], nets=[...])",
     "label_net": "label_net(target='U1.3', net='GND')",
