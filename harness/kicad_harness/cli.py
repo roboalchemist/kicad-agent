@@ -177,7 +177,12 @@ async def _run(name, prompt, loop, model, supervised, thread_id, color) -> int:
     from pydantic_ai.ui.ag_ui import AGUIEventStream
 
     from kicad_harness.agent import goal as goals
-    from kicad_harness.agent.agent import HarnessDeps, build_agent, usage_limits_for
+    from kicad_harness.agent.agent import (
+        HarnessDeps,
+        build_agent,
+        design_part_count,
+        usage_limits_for,
+    )
     from kicad_harness.agent.state import DesignState
 
     paint = _color(color)
@@ -219,7 +224,7 @@ async def _run(name, prompt, loop, model, supervised, thread_id, color) -> int:
                 # the attempt produced output, so a later failure must not be retried blindly.
                 async with agent.run_stream_events(
                     user_prompt, deps=deps, message_history=history, deferred_tool_results=deferred,
-                    usage_limits=usage_limits_for(goal),
+                    usage_limits=usage_limits_for(goal, design_part_count(ws)),
                     model_settings=ModelSettings(max_tokens=budget),
                 ) as events:
                     async for event in events:

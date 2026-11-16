@@ -371,7 +371,7 @@ def datasheet(mfg: str, mpn: str, pages: str | None = None) -> dict[str, Any]:
     ``pages`` is a range like ``"1-3"``. Returns ``{mfg, mpn, has_pdf, text}``; ``text`` is
     empty when no PDF is held.
     """
-    ref = f"{mfg.strip()}/{mpn.strip()}"
+    ref = f"{mfg.strip().lower()}/{mpn.strip()}"
     args = ["datasheet", "get", ref, "--format", "markdown"]
     if pages:
         args += ["--page", pages]
@@ -472,7 +472,7 @@ def check_part(mpn: str, lcsc: str | None = None) -> dict[str, Any]:
 
 def datasheet_pages(mfg: str, mpn: str, pages: str | None = None) -> dict[str, Any]:
     """Page-level datasheet text as returned by ``i2cdb datasheet get --format json``."""
-    ref = f"{mfg.strip()}/{mpn.strip()}"
+    ref = f"{mfg.strip().lower()}/{mpn.strip()}"
     args = ["datasheet", "get", ref, "--format", "json", "--out", "-"]
     if pages:
         args += ["--page", pages]
@@ -543,7 +543,7 @@ def search_datasheet(mfg: str, mpn: str, query: str, *, pages: str | None = None
 
 def datasheet_pdf(mfg: str, mpn: str) -> bytes:
     """The raw PDF bytes for ``mfg/mpn`` (empty bytes when i2cdb has no PDF)."""
-    ref = f"{mfg.strip()}/{mpn.strip()}"
+    ref = f"{mfg.strip().lower()}/{mpn.strip()}"
     if not i2cdb_available():
         raise PartsError("the i2cdb CLI is not installed on this machine")
     env = dict(os.environ)
@@ -605,3 +605,129 @@ def render_datasheet_page(mfg: str, mpn: str, page: int, *, dpi: int = 130) -> d
             "dpi": dpi,
             "png": images[0].read_bytes(),
         }
+
+
+def _fetch_pdf(url: str, timeout: float = 45, max_bytes: int = 30_000_000) -> bytes:
+    """Download a supplier datasheet URL (NXP/TI/LCSC) as PDF bytes."""
+    import urllib.request
+
+    request = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = response.read(max_bytes + 1)
+    except Exception as exc:
+        raise PartsError(f"could not fetch datasheet URL: {type(exc).__name__}: {exc}") from exc
+    if len(data) > max_bytes:
+        raise PartsError("datasheet PDF is larger than the 30 MB limit")
+    if not data.startswith(b"%PDF"):
+        raise PartsError("the supplier URL did not return a PDF")
+    return data
+
+
+def _pdf_pages_from_bytes(data: bytes, pages: str | None = None) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="harness-remote-datasheet-") as tmp_name:
+        tmp = Path(tmp_name)
+        source = tmp / "datasheet.pdf"
+        source.write_bytes(data)
+        try:
+            info = subprocess.run(["pdfinfo", str(source)], capture_output=True, text=True, timeout=30)
+            count = 0
+            for line in (info.stdout or "").splitlines():
+                if line.startswith("Pages:"):
+                    count = int(line.split(":", 1)[1].strip())
+        except Exception:
+            count = 0
+        args = ["pdftotext", "-layout", "-enc", "UTF-8"]
+        if pages:
+            first, _, last = pages.partition("-")
+            args += ["-f", first, "-l", last or first]
+        args += [str(source), "-"]
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            raise PartsError("pdftotext failed: " + (proc.stderr or "").strip()[:300])
+        chunks = (proc.stdout or "").split("\f")
+        if chunks and not chunks[-1].strip():
+            chunks.pop()
+        start = 1
+        if pages:
+            start = int(pages.partition("-")[0])
+        return {
+            "page_count": count or len(chunks),
+            "pages": [{"n": start + i, "text": text} for i, text in enumerate(chunks)],
+        }
+
+
+def remote_datasheet_text(url: str, pages: str | None = None) -> dict[str, Any]:
+    data = _pdf_pages_from_bytes(_fetch_pdf(url), pages)
+    text = "\n\n".join(f"## Page {p['n']}\n{p['text']}" for p in data["pages"])
+    return {"source": url, "page_count": data["page_count"], "pages": [p["n"] for p in data["pages"]],
+            "text": text[:12000], "has_pdf": bool(data["pages"])}
+
+
+def search_remote_datasheet(url: str, query: str, *, pages: str | None = None,
+                            max_matches: int = 5, context: int = 180) -> dict[str, Any]:
+    terms = [term for term in re.split(r"[^0-9A-Za-z_+.-]+", (query or "").lower()) if len(term) > 1]
+    if not terms:
+        raise PartsError("give a search query with at least one word")
+    data = _pdf_pages_from_bytes(_fetch_pdf(url), pages)
+    matches: list[dict[str, Any]] = []
+    for page in data["pages"]:
+        text = page["text"] or ""
+        low = text.lower()
+        if not all(term in low for term in terms):
+            continue
+        score = sum(low.count(term) for term in terms)
+        at = min((low.find(term) for term in terms if low.find(term) >= 0), default=0)
+        snippet = re.sub(r"\s+", " ", text[max(0, at - context):at + context]).strip()
+        matches.append({"page": page["n"], "score": score, "snippet": snippet})
+    matches.sort(key=lambda item: (-item["score"], item["page"]))
+    top = matches[:max(1, int(max_matches))]
+    by_number = {p["n"]: p["text"] for p in data["pages"]}
+    return {
+        "source": url, "query": query, "page_count": data["page_count"],
+        "pages": [m["page"] for m in matches], "matches": top,
+        "text": "\n\n".join(f"## Page {m['page']}\n{by_number.get(m['page'], '')}" for m in top)[:12000],
+        "has_pdf": bool(matches),
+    }
+
+
+def render_remote_datasheet_page(url: str, page: int, *, dpi: int = 130) -> dict[str, Any]:
+    number = int(page)
+    if number < 1:
+        raise PartsError("page must be >= 1")
+    dpi = max(80, min(int(dpi), 200))
+    data = _fetch_pdf(url)
+    with tempfile.TemporaryDirectory(prefix="harness-remote-page-") as tmp_name:
+        tmp = Path(tmp_name)
+        source = tmp / "datasheet.pdf"
+        source.write_bytes(data)
+        try:
+            info = subprocess.run(["pdfinfo", str(source)], capture_output=True, text=True, timeout=30)
+            count = 0
+            for line in (info.stdout or "").splitlines():
+                if line.startswith("Pages:"):
+                    count = int(line.split(":", 1)[1].strip())
+        except Exception:
+            count = 0
+        if count and number > count:
+            raise PartsError(f"page {number} is out of range; the datasheet has {count} pages")
+        prefix = tmp / "page"
+        proc = subprocess.run(["pdftoppm", "-f", str(number), "-l", str(number), "-png",
+                               "-r", str(dpi), str(source), str(prefix)],
+                              capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            raise PartsError("pdftoppm failed: " + (proc.stderr or "").strip()[:300])
+        images = sorted(tmp.glob("page*.png"))
+        if not images:
+            raise PartsError(f"pdftoppm produced no image for page {number}")
+        return {"source": url, "page": number, "page_count": count or None, "dpi": dpi,
+                "png": images[0].read_bytes()}
+
+
+def supplier_datasheet_url(mpn: str) -> str | None:
+    """The vendor PDF URL JLCPCB lists for ``mpn`` when i2cdb has no record."""
+    try:
+        result = check_part(mpn)
+    except Exception:
+        return None
+    return (result.get("checks", {}).get("datasheet") or {}).get("supplier_url")

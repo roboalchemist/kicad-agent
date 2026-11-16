@@ -332,9 +332,16 @@ def _box_at(text: str, x: float, y: float, anchor: str) -> tuple[float, float, f
     return (x, y - TEXT_H / 2, x + width, y + TEXT_H / 2)
 
 
-def _free(box, occupied: list, boxes: dict[str, tuple], page: tuple[float, float]) -> bool:
-    """A candidate label box: on the page, clear of other labels and of every symbol body."""
-    if box[0] < 1 or box[1] < 1 or box[2] > page[0] - 1 or box[3] > page[1] - 1:
+def _free(box, occupied: list, boxes: dict[str, tuple],
+          page: tuple[float, float] | None) -> bool:
+    """A candidate label box: inside the page (if it is fixed), clear of labels and symbol bodies.
+
+    ``page`` is None when the sheet will be cropped to the drawing afterwards. A fixed page must
+    not be allowed to veto a pin's natural direction: the fallback pushed labels sideways into a
+    neighbouring pin's stub, which merged two nets while the sheet still looked tidy.
+    """
+    if page is not None and (box[0] < 1 or box[1] < 1
+                             or box[2] > page[0] - 1 or box[3] > page[1] - 1):
         return False
     if any(_overlap_area(box, other) > 0.02 for other in occupied):
         return False
@@ -645,6 +652,49 @@ def _pin_outward(doc: Schematic, ref: str, number: str) -> tuple[float, float]:
             local_x * math.sin(theta) + local_y * math.cos(theta))
 
 
+def _point_on_segment(point: tuple[float, float], a: tuple[float, float],
+                      b: tuple[float, float]) -> bool:
+    (x, y), (x1, y1), (x2, y2) = point, a, b
+    if x1 == x2:
+        return x == x1 and min(y1, y2) <= y <= max(y1, y2)
+    if y1 == y2:
+        return y == y1 and min(x1, x2) <= x <= max(x1, x2)
+    return False
+
+
+def _segments_touch(a: tuple[float, float], b: tuple[float, float],
+                    c: tuple[float, float], d: tuple[float, float]) -> bool:
+    """True if two axis-aligned segments share any point: a crossing, a T-junction or an overlap."""
+    a, b, c, d = (NetNode(*point).key() for point in (a, b, c, d))
+    if a == c or a == d or b == c or b == d:
+        return True
+    return (_point_on_segment(b, c, d) or _point_on_segment(a, c, d)
+            or _point_on_segment(c, a, b) or _point_on_segment(d, a, b))
+
+
+def _stub_clashes(start: tuple[float, float], end: tuple[float, float],
+                  pin_anchors: set[tuple[float, float]],
+                  drawn: list[tuple[tuple[float, float], tuple[float, float]]]) -> bool:
+    """True when a pin-to-label stub would join a pin to something it does not belong to.
+
+    A stub that ends on another pin, runs through one, or meets another net's stub makes KiCad
+    read two nets as one. The sheet still looks tidy, so the netlist is the only place the damage
+    shows up — this check is what keeps the drawing and the netlist in agreement.
+    """
+    a, b = NetNode(*start).key(), NetNode(*end).key()
+    if a == b:
+        return True
+    if b in pin_anchors and b != a:
+        return True
+    for point in pin_anchors:
+        if point != a and _point_on_segment(point, a, b):
+            return True
+    for c, d in drawn:
+        if _segments_touch(a, b, c, d):
+            return True
+    return False
+
+
 def _route_between(a: tuple[float, float], a_out: tuple[float, float],
                    b: tuple[float, float], b_out: tuple[float, float],
                    step: float) -> list[tuple[float, float]]:
@@ -868,8 +918,23 @@ def _lay_out(
     # measured from where the symbols are *now*, not from the pre-move snapshot.
     placements = sorted(doc.placements(), key=lambda p: _natural_key(p.reference))
     placed_boxes = symbol_boxes(doc)
-    page_size = _paper(doc)[1]
+    # With no explicit paper the sheet is cropped to the drawing at the end, so the page size
+    # must not constrain label placement.
+    page_size = _paper(doc)[1] if paper else None
     placed_labels: list[tuple[float, float, float, float]] = []
+    # Points a stub must never end on or cross: every pin anchor on the sheet. A stub that lands
+    # on a foreign pin — or crosses another net's stub — silently merges the two nets, which is
+    # how a tidy-looking sheet ended up with DRV2 and DRV3 as one net.
+    pin_anchors: set[tuple[float, float]] = set()
+    for placement in placements:
+        symbol = doc.lookup(placement.lib_id)
+        if symbol is None:
+            continue
+        for number in symbol.pins:
+            point = doc.pin_position(placement, number)
+            if point is not None:
+                pin_anchors.add(NetNode(*point).key())
+    drawn: list[tuple[tuple[float, float], tuple[float, float]]] = []
     stubs = labels = 0
     for placement in placements:
         symbol = doc.lookup(placement.lib_id)
@@ -902,7 +967,8 @@ def _lay_out(
                 directions += [(1.0, 0.0), (-1.0, 0.0)]
             else:
                 directions += [(0.0, 1.0), (0.0, -1.0)]
-            candidate: tuple[tuple[float, float], float, str] | None = None
+            candidates: list[tuple[bool, bool, tuple[float, float], float, str,
+                                    tuple[float, float]]] = []
             for length_scale in (1.0, 1.6, 2.4):
                 for dx, dy in directions:
                     for anchor_side in ("left", "right") if abs(dy) > abs(dx) else (
@@ -911,21 +977,25 @@ def _lay_out(
                         end = (pin[0] + STUB * scale * length_scale * dx,
                                pin[1] + STUB * scale * length_scale * dy)
                         box = _box_at(name, end[0], end[1], anchor_side)
-                        if _free(box, placed_labels, placed_boxes, page_size):
-                            candidate = ((dx, dy), length_scale, anchor_side)
-                            break
-                    if candidate:
-                        break
-                if candidate:
-                    break
-            if candidate is None:
+                        candidates.append((
+                            _stub_clashes(pin, end, pin_anchors, drawn),
+                            not _free(box, placed_labels, placed_boxes, page_size),
+                            (dx, dy), length_scale, anchor_side, end,
+                        ))
+            # Prefer a stub that is both safe and clear; accept a merely safe one rather than
+            # risk a short, and only then fall back to the shortest natural stub.
+            chosen = (next((c for c in candidates if not c[0] and not c[1]), None)
+                      or next((c for c in candidates if not c[0]), None))
+            if chosen is None:
                 dx, dy = directions[0]
-                candidate = ((dx, dy), 1.0, "left" if dx >= 0 else "right")
-            (dx, dy), length_scale, anchor_side = candidate
-            end = (pin[0] + STUB * scale * length_scale * dx,
-                   pin[1] + STUB * scale * length_scale * dy)
+                chosen = (True, True, (dx, dy), 0.25,
+                          "left" if dx >= 0 else "right",
+                          (pin[0] + STUB * scale * 0.25 * dx,
+                           pin[1] + STUB * scale * 0.25 * dy))
+            _clash, _busy, (dx, dy), length_scale, anchor_side, end = chosen
             doc.add_wire([pin, end])
             doc.add_label(name, *end, anchor=anchor_side)
+            drawn.append((NetNode(*pin).key(), NetNode(*end).key()))
             placed_labels.append(_box_at(name, end[0], end[1], anchor_side))
             stubs += 1
             labels += 1

@@ -374,3 +374,15 @@ def test_draw_pin_stubs_wires_labels_and_keeps_the_netlist(tmp_path: Path, libra
     again = sch.Schematic.load(doc.path, libraries=libraries)
     assert again.pin_net(again.placements()[0], pin) == "STUBBED"
     assert again.unconnected_pins() == [{"ref": "R1", "pin": p} for p in again.lookup(ids[0]).pins if p != pin]
+
+
+def test_derived_symbols_inherit_pins_from_their_base() -> None:
+    """KiCad's `extends` symbols (AMS1117-3.3 etc.) were being loaded with zero pins."""
+    from kicad_harness.engine.schematic import read_library
+
+    library = read_library("/usr/share/kicad/symbols/Regulator_Linear.kicad_sym")
+    ams = library["AMS1117-3.3"]
+    assert len(ams.pins) == 3
+    assert {(pin.number, pin.name) for pin in ams.pins.values()} == {
+        ("1", "GND"), ("2", "VO"), ("3", "VI")}
+    assert ams.pins["2"].electrical != ""

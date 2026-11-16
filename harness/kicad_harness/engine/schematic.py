@@ -13,6 +13,7 @@ Coordinates are millimetres in KiCad schematic space: x right, **y down**.
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 import uuid
@@ -245,7 +246,7 @@ def read_library(path: str | Path) -> dict[str, LibrarySymbol]:
     text = Path(path).read_text(encoding="utf-8")
     tree = parse(text)
     lib_name = Path(path).stem
-    out: dict[str, LibrarySymbol] = {}
+    raw: dict[str, dict[str, Any]] = {}
     for sym in find_all(tree, "symbol"):
         if len(sym) < 2 or isinstance(sym[1], list):
             continue
@@ -281,15 +282,34 @@ def read_library(path: str | Path) -> dict[str, LibrarySymbol]:
                     length=float(length_node[1]) if length_node and len(length_node) > 1 else 2.54,
                     electrical=_clean(pin[1]) if len(pin) > 1 else "unspecified",
                 )
+        extends_node = find_one(sym, "extends")
+        raw[name] = {
+            "pins": pins, "reference": reference, "value": value,
+            "footprint": footprint, "power": find_one(sym, "power") is not None,
+            "body": sym,
+            "extends": _clean(extends_node[1]) if extends_node and len(extends_node) > 1 else None,
+        }
+    out: dict[str, LibrarySymbol] = {}
+    for name, item in raw.items():
+        pins = dict(item["pins"])
+        body = item["body"]
+        power = item["power"]
+        base = raw.get(item["extends"] or "")
+        if base is not None:
+            if not pins:
+                pins = dict(base["pins"])
+            if not item["pins"]:
+                body = copy.deepcopy(base["body"])
+            power = power or base["power"]
         out[name] = LibrarySymbol(
             name=name,
             lib_id=f"{lib_name}:{name}",
             pins=pins,
-            reference=reference,
-            value=value,
-            footprint=footprint,
-            power=find_one(sym, "power") is not None,
-            body=sym,
+            reference=item["reference"],
+            value=item["value"],
+            footprint=item["footprint"],
+            power=power,
+            body=body,
         )
     return out
 
@@ -458,23 +478,41 @@ class Schematic:
             round(placement.y + px * sin + py * cos, 6),
         )
 
+    def pin_direction(self, placement: SymbolPlacement, number: str) -> tuple[float, float] | None:
+        """Sheet direction in which a pin leaves its symbol — away from the body.
+
+        KiCad stores a pin's angle as the direction it points from its connection end *towards*
+        the symbol, in a Y-up space. Reversing it (and flipping y for the sheet, where y grows
+        down) gives the direction a wire should leave the pin, before the placement's rotation.
+        """
+        symbol = self.lookup(placement.lib_id)
+        pin = symbol.pins.get(_clean(number)) if symbol else None
+        if pin is None:
+            return None
+        angle = math.radians(pin.angle)
+        local_x, local_y = -math.cos(angle), math.sin(angle)
+        theta = math.radians(placement.rotation)
+        return (local_x * math.cos(theta) - local_y * math.sin(theta),
+                local_x * math.sin(theta) + local_y * math.cos(theta))
+
     def pin_endpoint(self, placement: SymbolPlacement, number: str) -> tuple[float, float] | None:
         """Absolute position of a pin's *outer* end (anchor plus the pin's own length).
 
         KiCad connects at the anchor, but generators such as skidl draw wires to this point, so
-        connectivity considers both.
+        connectivity considers both. The end must be on the far side of the anchor from the
+        symbol body; pointing it inwards made stubs run into the part and labels appear inside it.
         """
         symbol = self.lookup(placement.lib_id)
         if symbol is None:
             return None
         pin = symbol.pins.get(_clean(number))
         anchor = self.pin_position(placement, number)
-        if pin is None or anchor is None:
+        direction = self.pin_direction(placement, number)
+        if pin is None or anchor is None or direction is None:
             return None
-        angle = math.radians(placement.rotation + pin.angle)
         return (
-            round(anchor[0] + pin.length * math.cos(angle), 6),
-            round(anchor[1] - pin.length * math.sin(angle), 6),
+            round(anchor[0] + pin.length * direction[0], 6),
+            round(anchor[1] + pin.length * direction[1], 6),
         )
 
     def pin_points(self, placement: SymbolPlacement, number: str) -> list[tuple[float, float]]:
@@ -933,9 +971,9 @@ class Schematic:
                     continue
                 key = NetNode(*anchor).key()
                 pin_points.setdefault(key, []).append((placement.reference, number))
-                end = self.pin_endpoint(placement, number)
-                if end and end != anchor:
-                    outward.setdefault(key, (end[0] - anchor[0], end[1] - anchor[1]))
+                direction = self.pin_direction(placement, number)
+                if direction and (direction != (0.0, 0.0)):
+                    outward.setdefault(key, direction)
 
         labels = find_all(self.tree, "label") + find_all(self.tree, "global_label")
         stubbed = skipped = 0
@@ -1205,7 +1243,9 @@ def _rename_symbol(body: list, full_name: str) -> list:
     for i, child in enumerate(out):
         if isinstance(child, list) and child and child[0] == "symbol" and len(child) > 1:
             renamed = list(child)
-            renamed[1] = Q(str(child[1]).split(":", 1)[-1])
+            unit_name = str(child[1]).split(":", 1)[-1]
+            match = re.match(r"^(.*)_(\d+)_(\d+)$", unit_name)
+            renamed[1] = Q(f"{short}_{match.group(2)}_{match.group(3)}" if match else unit_name)
             out[i] = renamed
     # KiCad 10 dropped numeric property ids; a stale ``(id N)`` makes eeschema refuse the file.
     cleaned = []

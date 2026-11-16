@@ -25,6 +25,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     # -- global ---------------------------------------------------------------------------
     "get_design": ("global", "Start every session here: outline, parts, nets, DRC and goal state."),
     "set_goal": ("global", "Turn the user's words into machine-checkable criteria before editing."),
+    "set_brief": ("global", "Replace the design brief and re-derive its counted requirements after a redesign."),
     "list_versions": ("global", "Use before restoring, to find the version you want."),
     "diff_versions": ("global", "Compare netlists or BOMs between two revisions before trusting a change."),
     "restore_version": ("global", "Restore a known-good state instead of hand-reverting many edits."),
@@ -40,7 +41,8 @@ TOOLS: dict[str, tuple[str, str]] = {
     "set_bom_alternates": ("bom", "Record second-source LCSC codes; they appear in the manufacturing BOM."),
     "set_part_lifecycle": ("bom", "Record MSL, ESD class, lead time and lifecycle for the BOM."),
     # -- schematic ------------------------------------------------------------------------
-    "generate_schematic": ("schematic", "Draw a whole design from a parts/nets list instead of placing symbols one by one."),
+    "draw_schematic": ("schematic", "Draw a whole design natively and fast; use when skidl is slow or lacks a vendor symbol."),
+    "generate_schematic": ("schematic", "Draw a whole design with skidl when its placement is specifically wanted."),
     "add_symbol": ("schematic", "Place one symbol when extending or fixing a sheet."),
     "connect_pins": ("schematic", "Wire pin to pin and name the net; the router avoids crossings."),
     "move_symbol": ("schematic", "Move/rotate a symbol; its reference/value text follows."),
@@ -152,7 +154,7 @@ WORKFLOWS: dict[str, list[dict[str, object]]] = {
         {"step": "Draw the circuit",
          "detail": "generate_schematic for a whole design, add_symbol/connect_pins to extend or "
                    "repair it.",
-         "tools": ["generate_schematic", "add_symbol", "connect_pins"],
+         "tools": ["draw_schematic", "generate_schematic", "add_symbol", "connect_pins"],
          "gate": "every part placed, every pin connected or no-connect",
          "ref": "pcb-design-process#Strict Dependencies"},
         {"step": "Make ERC clean",
@@ -315,6 +317,7 @@ EXAMPLES: dict[str, str] = {
     "search_datasheets": "search_datasheets(manufacturer='ti', package='SOIC-8', has_pdf=True)",
     "read_part_datasheet": "read_part_datasheet(mpn='NE555DR', query='thermal resistance')",
     "read_datasheet_page": "read_datasheet_page(mpn='ULN2003AIDRE4', page=11, dpi=130)",
+    "draw_schematic": "draw_schematic(parts=[...], nets=[...])",
     "generate_schematic": "generate_schematic(parts=[...], nets=[...])",
     "label_net": "label_net(target='U1.3', net='GND')",
     "connect_pins": "connect_pins(a='R1.2', b='C1.1', net='FILTER')",

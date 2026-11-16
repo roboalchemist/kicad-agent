@@ -338,6 +338,27 @@ sheet never looks like a passing one.
 Spacing is retried at 1.0/1.25/1.6/2.1 until `analyze()` reports 0, so the layout is as tight as
 it can be while passing.
 
+**A tidy sheet must be the same circuit.** Labels make connectivity, so a stub that lands on a
+foreign pin, runs through one, or meets another net's stub merges two nets while the drawing still
+looks fine. Three guards keep the drawing and the netlist in agreement:
+
+- `_stub_clashes()` rejects any candidate stub that ends on or crosses another pin anchor, or that
+  intersects an already drawn stub (crossing, T-junction or overlap). The placer prefers a safe
+  candidate that is also clear, accepts a safe-but-crowded one rather than risk a short, and only
+  then falls back to the shortest natural stub.
+- `_free()` applies the page bound only when the caller fixed the paper size. With the default
+  "crop the page to the drawing", a page edge must not veto a pin's natural direction: that
+  fallback is what pushed a label sideways into its neighbour's stub.
+- `engine/native_schematic.py` exports KiCad's own netlist after drawing (and after tidy) and
+  compares it pin by pin with the requested `nets`; any split, merge or missing pin raises, and
+  `draw_schematic` restores the previous sheet instead of committing it. `netlist_changes` in
+  every schematic edit result reports which pins actually changed net, so an accidental merge is
+  visible in the tool output rather than discovered on the board.
+
+A goal's request budget is a runaway guard, not a design-size constraint: `usage_limits_for()`
+raises the stored limit to `60 + 6 x parts`, because a 37-part board needs well over a hundred
+tool calls (every pin is a label somewhere).
+
 Three further pieces let the agent finish a sheet itself rather than receive a finished one:
 
 - `_owners()` assigns every 2-pin passive to the part it serves, and `tidy` places it in that

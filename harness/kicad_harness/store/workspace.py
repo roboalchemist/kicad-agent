@@ -65,7 +65,7 @@ DEFAULT_GOAL: dict[str, Any] = {
         {"id": "review", "type": "open_threads", "severities": ["must_fix"], "max": 0},
         {"id": "parity", "type": "schematic_parity", "max_missing": 0},
     ],
-    "budget": {"max_requests": 120, "max_minutes": 30},
+    "budget": {"max_requests": 400, "max_minutes": 90},
 }
 
 # The schematic phase is judged before any board exists: the netlist has to be electrically
@@ -78,7 +78,7 @@ DEFAULT_SCHEMATIC_GOAL: dict[str, Any] = {
         {"id": "board", "type": "board_laid_out", "min": 1},
         {"id": "parity", "type": "schematic_parity", "max_missing": 0},
     ],
-    "budget": {"max_requests": 120, "max_minutes": 45},
+    "budget": {"max_requests": 300, "max_minutes": 90},
 }
 
 DEFAULT_PROJECT: dict[str, Any] = {
@@ -597,6 +597,23 @@ class Workspace:
             return stored
         brief = self.brief()
         return requirements_mod.derive(brief) if brief else []
+
+    def set_brief(self, brief: str, author: str = "agent") -> dict[str, Any] | None:
+        """Replace the project brief and re-derive its countable requirements.
+
+        A redesign legitimately changes what "16 relays" or "5 channels" means; without this,
+        the old brief keeps failing the new goal.
+        """
+        if not isinstance(brief, str) or not brief.strip():
+            raise ValueError("the brief cannot be empty")
+        from ..agent import requirements as requirements_mod
+
+        with self.lock:
+            project = self.project()
+            project["brief"] = brief.strip()
+            project["requirements"] = requirements_mod.derive(brief)
+            (self.path / PROJECT_FILE).write_text(json.dumps(project, indent=2) + "\n", encoding="utf-8")
+            return self._commit_locked("Update the project brief", author, None, paths=[PROJECT_FILE])
 
     def brief(self) -> str | None:
         """The prompt the design was created from, if any."""

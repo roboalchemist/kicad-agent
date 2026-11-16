@@ -504,11 +504,15 @@ def create_app() -> FastAPI:
         run_input = adapter.run_input
         design = (run_input.state or {}).get("design") if isinstance(run_input.state, dict) else None
         goal: dict = goals.default_goal()
+        part_count = 0
         if design:
+            from kicad_harness.agent.agent import design_part_count
             from kicad_harness.store.workspace import Workspace
 
             if Workspace.exists(svc.config, design):
-                goal = Workspace.open(svc.config, design).goal()
+                ws = Workspace.open(svc.config, design)
+                goal = ws.goal()
+                part_count = await asyncio.to_thread(design_part_count, ws)
         budget = goal.get("budget") or {}
         deps = HarnessDeps(state=DesignState(), services=svc, run_id=run_input.run_id,
                            max_minutes=budget.get("max_minutes"))
@@ -539,7 +543,7 @@ def create_app() -> FastAPI:
         def make_stream(budget: int):
             return adapter.run_stream(
                 deps=deps,
-                usage_limits=usage_limits_for(goal),
+                usage_limits=usage_limits_for(goal, part_count),
                 on_complete=final_state,
                 model_settings=ModelSettings(max_tokens=budget),
             )

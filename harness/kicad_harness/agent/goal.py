@@ -13,7 +13,7 @@ DEFAULT_GOAL: dict[str, Any] = {
         {"id": "routed", "type": "unconnected", "max": 0},
         {"id": "review", "type": "open_threads", "severities": ["must_fix"], "max": 0},
     ],
-    "budget": {"max_requests": 120, "max_minutes": 30},
+    "budget": {"max_requests": 400, "max_minutes": 90},
 }
 
 OPEN_STATUSES = {"open", "reopened"}

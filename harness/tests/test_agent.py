@@ -838,3 +838,18 @@ async def test_find_parts_verifies_one_part_by_mpn(services, design, monkeypatch
     payload = next(p for m in result.all_messages() for p in getattr(m, "parts", [])
                    if isinstance(p, ToolReturnPart) and p.tool_name == "find_parts").content
     assert payload["ok"] is True and payload["mpn"] == "NE555DR"
+
+
+def test_net_changes_reports_pins_that_moved_between_nets() -> None:
+    """Every schematic edit reports the connectivity it actually produced (geometry is invisible)."""
+    from kicad_harness.agent.agent import net_changes
+
+    assert net_changes({"U1.1": "A", "U1.2": "B"}, {"U1.1": "A", "U1.2": "B"}) == []
+    changes = net_changes(
+        {"U1.1": "A", "U2.1": "A", "U3.1": "B"},
+        {"U1.1": "A", "U2.1": "A", "U3.1": "A"},
+    )
+    assert changes == [
+        {"net": "A", "gained": ["U3.1"]},
+        {"net": "B", "lost": ["U3.1"]},
+    ]

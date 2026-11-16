@@ -234,3 +234,23 @@ def test_schematic_png_is_a_viewable_image(tmp_path: Path, libraries, two_pin: s
     from PIL import Image
     with Image.open(out) as image:
         assert image.width == 900 and image.height > 100
+
+
+def test_a_cropped_sheet_does_not_force_a_label_sideways(tmp_path: Path, libraries, two_pin: str) -> None:
+    """The page is cropped to the drawing after layout, so a page bound must not veto the
+    natural label direction — that fallback is what pushed a stub onto its neighbour's pin."""
+    box = layout._box_at("A_LONG_NET_NAME", 300.0, 100.0, "left")
+    assert layout._free(box, [], {}, None) is True
+    assert layout._free(box, [], {}, (297.0, 210.0)) is False
+
+
+def test_a_stub_never_lands_on_another_pin_or_meets_another_stub() -> None:
+    anchors = {(0.0, 0.0), (0.0, 2.54), (10.0, 0.0)}
+    assert layout._stub_clashes((0.0, 0.0), (0.0, 2.54), anchors, []) is True
+    assert layout._stub_clashes((0.0, 0.0), (0.0, 3.81), anchors, []) is True   # runs through a pin
+    assert layout._stub_clashes((0.0, 0.0), (5.08, 0.0), anchors, []) is False
+    # A stub that overlaps an existing stub, or T-junctions into one, merges its net with it.
+    assert layout._stub_clashes((0.0, 0.0), (0.0, 5.0), {(0.0, 0.0)},
+                                [((0.0, 2.0), (0.0, 7.0))]) is True
+    assert layout._stub_clashes((0.0, 0.0), (5.0, 0.0), {(0.0, 0.0)},
+                                [((5.0, -2.0), (5.0, 2.0))]) is True

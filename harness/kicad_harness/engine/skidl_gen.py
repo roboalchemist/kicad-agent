@@ -140,7 +140,7 @@ def generate(
     *,
     symbol_dirs: list[Path] | None = None,
     footprint_dirs: list[Path] | None = None,
-    timeout: float = 180,
+    timeout: float = 600,
     config: Any | None = None,
 ) -> GenerationResult:
     """Write a schematic for ``parts``/``nets`` to ``out`` using skidl.
@@ -214,7 +214,11 @@ def _netlist_matches(out: Path, nets: list[NetSpec]) -> bool:
             for member in members:
                 by_pin[(member["ref"], str(member["pin"]))] = name
         groups: list[str] = []
+        # A one-pin net is a label test, not a connectivity constraint; skidl may omit it from the
+        # netlist. Validate only nets with at least two pins.
         for net in nets:
+            if len(net.pins) < 2:
+                continue
             names = {by_pin.get((ref, str(number))) for ref, number in net.pins}
             if not names or None in names or len(names) != 1:
                 return False
@@ -238,6 +242,8 @@ def _netlist_matches(out: Path, nets: list[NetSpec]) -> bool:
                 return False
             if index < 0 or index >= len(nets):
                 return False
+            if len(nets[index].pins) < 2:
+                continue
             net = doc.pin_net(flag, "1") or power.get((flag.reference, "1"))
             if net is None or str(net).lstrip("/") != nets[index].name:
                 return False

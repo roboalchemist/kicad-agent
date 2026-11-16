@@ -528,6 +528,39 @@ async def _schematic_commit(
         metadata=[_snapshot(ctx.deps.state)],
     )
 
+def _pin_nets(doc: Any) -> dict[str, str]:
+    """``{"U1.3": "/NET"}`` for every pin on the sheet, read from the drawing."""
+    out: dict[str, str] = {}
+    for placement in doc.placements():
+        symbol = doc.lookup(placement.lib_id)
+        if symbol is None:
+            continue
+        for number in symbol.pins:
+            net = doc.pin_net(placement, number)
+            if net:
+                out[f"{placement.reference}.{number}"] = str(net).lstrip("/")
+    return out
+
+
+def net_changes(before: dict[str, str], after: dict[str, str], limit: int = 12) -> list[dict[str, Any]]:
+    """Nets whose membership changed between two readings of the schematic."""
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for pin, net in before.items():
+        if after.get(pin) != net:
+            grouped.setdefault(net, {"gained": [], "lost": []})["lost"].append(pin)
+    for pin, net in after.items():
+        if before.get(pin) != net:
+            grouped.setdefault(net, {"gained": [], "lost": []})["gained"].append(pin)
+    out = []
+    for net in sorted(grouped):
+        entry = {"net": net}
+        entry.update({key: sorted(value) for key, value in grouped[net].items() if value})
+        out.append(entry)
+    if len(out) > limit:
+        out = out[:limit] + [{"note": f"{len(out) - limit} more net(s) changed"}]
+    return out
+
+
 async def _schematic_edit(
     ctx: RunContext[HarnessDeps],
     tool: str,
@@ -545,11 +578,19 @@ async def _schematic_edit(
     ws = _ws(ctx)
     try:
         doc = await asyncio.to_thread(_schematic, ctx, want)
+        before = await asyncio.to_thread(_pin_nets, doc)
         result = await asyncio.to_thread(work, doc)
         await asyncio.to_thread(doc.save)
+        after = await asyncio.to_thread(_pin_nets, doc)
     except Exception as exc:  # engine/lib errors go back to the model as data, not retries
         return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
     payload = result if isinstance(result, dict) else {"result": result}
+    # A schematic edit changes connectivity through geometry, so a misplaced label or a stub
+    # that lands on the wrong pin is invisible in the drawing. Report what the netlist actually
+    # did, every time, so an unintended merge is seen in the tool result instead of on the board.
+    changes = net_changes(before, after)
+    if changes:
+        payload["netlist_changes"] = changes
     return await _schematic_commit(ctx, tool, subject, payload)
 
 async def _sync_schematic_state(ctx: RunContext[HarnessDeps], *, bump: bool = False) -> None:
@@ -1186,6 +1227,13 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
         board_hash, _ = await _working(ctx)
         drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
+        from kicad_harness.engine import kicad_cli as _kc
+
+        try:
+            erc_report = await asyncio.to_thread(_kc.erc, ws.schematic_path, config=svc.config)
+            erc_counts, erc_violations = erc_report["counts"], erc_report["violations"]
+        except Exception:
+            erc_counts, erc_violations = {"errors": None, "warnings": None}, []
         evaluation = await _evaluate(ctx)
         from kicad_harness.engine import balance, design_rules, heights, manufacturing, placement, si
 
@@ -1222,6 +1270,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         result = {
             "ok": True,
             "phase": "board",
+            "erc": erc_counts,
             "drc_counts": drc.get("counts", {}),
             "violations": [brief(v) for v in drc.get("violations", [])[:30]],
             "unconnected": [brief(v) for v in drc.get("unconnected", [])[:20]],
@@ -1241,6 +1290,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             "via_stubs": stub_report,
             "schematic": schematic_report,
         }
+        if detail:
+            result["erc_violations"] = erc_violations[:15]
         try:
             spec = {"mode": "2d", "side": "front"}
             png_path, url = await asyncio.to_thread(svc.artifacts.render, board_hash, spec)
@@ -1367,12 +1418,15 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         ctx: RunContext[HarnessDeps], target: str | None = None,
         region: list[float] | None = None, side: str = "front",
         annotate: list[str] | None = None, width_px: int = 1400,
+        kind: str = "board",
     ) -> ToolReturn:
         """A close-up, annotated, calibrated view of the board or schematic.
 
         Args:
             target: Zoom to an entity: U1, U1.3, net:GND, a UUID, or "x,y".
             region: Explicit [x1, y1, x2, y2] crop in mm (wins over target).
+            kind: "board" (default) or "schematic"; use schematic when a board exists
+                but you need to inspect a schematic symbol.
             side: front or back for a board view.
             annotate: any of "refs" (reference designators), "pads" (pad numbers), "scale"
                 (mm scale bar). Default: all three on the board, refs on the schematic.
@@ -1384,7 +1438,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
         ws = _ws(ctx)
         annotate = [item.lower() for item in (annotate or [])] or ["refs", "pads", "scale"]
-        if ws.phase() == "schematic" or not ws.board_path.is_file():
+        if kind == "schematic" or ws.phase() == "schematic" or not ws.board_path.is_file():
             doc = await asyncio.to_thread(_schematic, ctx)
             boxes = await asyncio.to_thread(layout_mod.symbol_boxes, doc)
             highlight: list[list[float]] = []
@@ -2474,6 +2528,35 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return await _schematic_edit(ctx, "label_net", f"Label {text} as {net}", work)
 
     @agent.tool(sequential=True)
+    async def draw_schematic(
+        ctx: RunContext[HarnessDeps], parts: list[dict], nets: list[dict],
+    ) -> ToolReturn:
+        """Draw a whole schematic natively (fast, no skidl).
+
+        Same `parts`/`nets` shape as generate_schematic. Loads only the named libraries, labels
+        every pin, adds PWR_FLAGs for supply nets, stubs the pins and runs tidy. Use this when
+        generate_schematic is slow or its symbol library is missing a vendor part; use
+        generate_schematic when you specifically need skidl's own placement.
+        """
+        from kicad_harness.engine import native_schematic, skidl_gen
+
+        ws = _ws(ctx)
+        try:
+            validated_parts, validated_nets = skidl_gen.validate({"parts": parts, "nets": nets})
+        except ValueError as exc:
+            return ToolReturn(return_value={"ok": False, "error": f"the netlist is invalid: {exc}"})
+        target = ws.schematic_path
+        previous = target.read_bytes() if target.is_file() else None
+        try:
+            result = await asyncio.to_thread(
+                native_schematic.generate, validated_parts, validated_nets, target)
+        except Exception as exc:
+            if previous is not None:
+                await asyncio.to_thread(target.write_bytes, previous)
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        return await _schematic_commit(ctx, "draw_schematic", "Draw the schematic natively", result)
+
+    @agent.tool(sequential=True)
     async def generate_schematic(
         ctx: RunContext[HarnessDeps],
         parts: list[dict],
@@ -2638,10 +2721,13 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         )
 
     @agent.tool(sequential=True)
-    async def start_board(ctx: RunContext[HarnessDeps], **_: Any) -> ToolReturn:
-        """Finish the schematic and lay out its board: creates the board, places every footprint and
-        assigns the nets KiCad's netlist gives, then switches the design to the board phase.
-        Call this once the schematic is complete and ERC is clean."""
+    async def start_board(ctx: RunContext[HarnessDeps], rebuild: bool = False, **_: Any) -> ToolReturn:
+        """Finish the schematic and lay out its board.
+
+        `rebuild=True` discards the current board and seeds a fresh one from the schematic;
+        without it an existing board is reconciled (parts added/removed, nets updated, layout
+        kept). Use rebuild after a deliberate redesign."""
+        _ = rebuild
         ws = _ws(ctx)
         from kicad_harness.engine import kicad_cli, seed
 
@@ -2670,7 +2756,11 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             )
             try:
                 doc = _schematic(ctx)
-                if ws.board_path.is_file():
+                if rebuild and ws.board_path.is_file():
+                    # A deliberate redesign: discard the old board so seed_board can create a
+                    # fresh one from the new netlist. The previous version remains in git.
+                    ws.board_path.unlink()
+                if ws.board_path.is_file() and not rebuild:
                     # Already laid out: bring the board in line with the edited schematic instead
                     # of throwing the layout away.
                     return seed.reconcile_board(doc, ws.board_path, svc.engine, netlist=netlist).to_dict()
@@ -2819,20 +2909,28 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         from kicad_harness.engine import parts
 
         try:
-            if not manufacturer:
-                hits = await asyncio.to_thread(parts.search_i2cdb, mpn, 10)
-                exact = next(
-                    (h for h in hits["parts"] if (h.get("mpn") or "").upper() == mpn.upper()), None
-                )
-                if not exact:
-                    return ToolReturn(return_value={
-                        "ok": False,
-                        "error": f"i2cdb has no record for {mpn!r}; near matches: "
-                                 f"{[h.get('mpn') for h in hits['parts'][:5]]}",
-                    })
+            hits = await asyncio.to_thread(parts.search_i2cdb, mpn, 10)
+            exact = next(
+                (h for h in hits["parts"] if (h.get("mpn") or "").upper() == mpn.upper()), None
+            )
+            if exact:
                 manufacturer = exact["manufacturer"]
-            result = await asyncio.to_thread(
-                parts.render_datasheet_page, manufacturer, mpn, page, dpi=dpi)
+            elif not manufacturer:
+                return ToolReturn(return_value={
+                    "ok": False,
+                    "error": f"i2cdb has no record for {mpn!r}; near matches: "
+                             f"{[h.get('mpn') for h in hits['parts'][:5]]}",
+                })
+            try:
+                result = await asyncio.to_thread(
+                    parts.render_datasheet_page, manufacturer, mpn, page, dpi=dpi)
+            except Exception:
+                url = await asyncio.to_thread(parts.supplier_datasheet_url, mpn)
+                if not url:
+                    raise
+                result = await asyncio.to_thread(
+                    parts.render_remote_datasheet_page, url, page, dpi=dpi)
+                result["supplier_url"] = url
         except Exception as exc:
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         png = result.pop("png")
@@ -2880,32 +2978,67 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         from kicad_harness.engine import parts
 
         try:
-            if not manufacturer:
-                hits = await asyncio.to_thread(parts.search_i2cdb, mpn, 10)
-                exact = next(
-                    (h for h in hits["parts"] if (h.get("mpn") or "").upper() == mpn.upper()), None
-                )
-                if not exact:
+            hits = await asyncio.to_thread(parts.search_i2cdb, mpn, 10)
+            exact = next(
+                (h for h in hits["parts"] if (h.get("mpn") or "").upper() == mpn.upper()), None
+            )
+            if exact:
+                manufacturer = exact["manufacturer"]
+            result = None
+            if exact:
+                try:
+                    if query:
+                        result = await asyncio.to_thread(
+                            parts.search_datasheet, manufacturer, mpn, query,
+                            pages=pages, max_matches=max_matches,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            parts.datasheet, manufacturer, mpn, pages or "1-6")
+                except Exception:
+                    result = None
+            # Fall back to the supplier PDF when i2cdb has no record or no usable text.
+            if not result or not result.get("has_pdf") or (query and not result.get("matches")):
+                url = await asyncio.to_thread(parts.supplier_datasheet_url, mpn)
+                if not url:
+                    if result is not None:
+                        result["ok"] = bool(result.get("has_pdf"))
+                        return ToolReturn(return_value=result)
+                    near = [h.get("mpn") for h in hits["parts"][:5]]
                     return ToolReturn(return_value={
                         "ok": False,
-                        "error": f"i2cdb has no record for {mpn!r}; near matches: "
-                                 f"{[h.get('mpn') for h in hits['parts'][:5]]}",
+                        "error": f"no datasheet found for {mpn!r} in i2cdb or the supplier catalogue"
+                                 + (f"; near matches: {near}" if near else ""),
                     })
-                manufacturer = exact["manufacturer"]
-            if query:
-                result = await asyncio.to_thread(
-                    parts.search_datasheet, manufacturer, mpn, query,
-                    pages=pages, max_matches=max_matches,
-                )
-            else:
-                result = await asyncio.to_thread(
-                    parts.datasheet, manufacturer, mpn, pages or "1-6")
+                if query:
+                    result = await asyncio.to_thread(
+                        parts.search_remote_datasheet, url, query,
+                        pages=pages, max_matches=max_matches)
+                else:
+                    result = await asyncio.to_thread(parts.remote_datasheet_text, url, pages or "1-6")
+                result["supplier_url"] = url
         except Exception as exc:
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         result["ok"] = bool(result.get("has_pdf"))
         return ToolReturn(return_value=result)
 
     # ------------------------------------------------------------------ goal
+
+    @agent.tool(sequential=True)
+    async def set_brief(ctx: RunContext[HarnessDeps], brief: str) -> ToolReturn:
+        """Replace the design brief and re-derive its countable requirements. Use when the
+        project is deliberately redesigned (e.g. 16 relays -> 5 channels); otherwise the old
+        brief keeps failing the new goal."""
+        ws = _ws(ctx)
+        try:
+            version = await asyncio.to_thread(ws.set_brief, brief)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        await _sync_state(ctx, bump=True)
+        return ToolReturn(return_value={"ok": True, "brief": ws.brief(),
+                                        "requirements": ws.requirements(),
+                                        "version": _version_brief(version)},
+                          metadata=[_snapshot(ctx.deps.state)])
 
     @agent.tool(sequential=True)
     async def set_goal(ctx: RunContext[HarnessDeps], summary: str, criteria: list[dict]) -> ToolReturn:
@@ -3032,9 +3165,31 @@ def get_agent() -> Agent[HarnessDeps, str | DeferredToolRequests]:
         _agent = build_agent()
     return _agent
 
-def usage_limits_for(goal: dict):
-    """UsageLimits from a goal's budget."""
+DEFAULT_REQUEST_LIMIT = 400
+
+
+def design_part_count(ws) -> int:
+    """How many parts the design has, for sizing the request budget (0 when unknown)."""
+    from kicad_harness.engine.schematic import Schematic
+
+    try:
+        doc = Schematic.load(ws.schematic_path)
+    except Exception:
+        return 0
+    return len([p for p in doc.placements() if not p.reference.startswith("#")])
+
+
+def usage_limits_for(goal: dict, parts: int | None = None):
+    """UsageLimits from a goal's budget, never smaller than the design needs.
+
+    A 37-part board needs well over a hundred requests (every pin is a label somewhere), so a
+    fixed limit stops an agent that is making steady progress. Scale the floor with the part
+    count: a limit is a runaway guard, not a design-size constraint.
+    """
     from pydantic_ai.usage import UsageLimits
 
     budget = goal.get("budget") or {}
-    return UsageLimits(request_limit=int(budget.get("max_requests", 120)))
+    limit = int(budget.get("max_requests", DEFAULT_REQUEST_LIMIT))
+    if parts:
+        limit = max(limit, 60 + 6 * int(parts))
+    return UsageLimits(request_limit=limit)
