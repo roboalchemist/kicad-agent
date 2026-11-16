@@ -157,6 +157,11 @@ render_3d_view(board, index, *, center=None, view_mm=None, side="top", rotate=No
 
 ### `freerouting.py`
 
+After the session is imported, `normalize_track_widths` raises every track to its net class
+width (specific patterns before `*`). Freerouting can come back under the class width it was
+given — a neckdown, or its own mil-based default — and a track narrower than the board minimum
+is a DRC error on every segment, which the agent would otherwise have to rebuild by hand.
+
 `autoroute(engine, board, config, timeout_s=120, passes=None) -> {"routed": bool, "unrouted": n, "tracks": n, "vias": n, "seconds"}`:
 - Exports the DSN, runs `java -jar freerouting.jar -de in.dsn -do out.ses -mp <passes> --gui.enabled=false`, then imports the SES.
 - Existing tracks are kept, so the caller rips up first if wanted.
@@ -253,7 +258,7 @@ One SQLite file (WAL mode, `check_same_thread=False`, a lock around writes, `bus
 ### `runs.py`
 
 - `start(design, *, thread_id, run_id, model, prompt, source="ui") -> run` (`source` is `"ui"` or `"cli"`) marks the run `running`.
-- `event(run_id, event_dict) -> seq` assigns seq 1, 2, … per run (atomic across processes). It also takes a pydantic AG-UI event, dumped with its camelCase aliases.
+- `event(run_id, event_dict) -> seq` assigns seq 1, 2, … per run (atomic across processes). It also takes a pydantic AG-UI event, dumped with its camelCase aliases. The next seq comes from `MAX(seq)` in `run_events`, not the cached `runs.last_seq`: a counter that drifted (a reopened run, a migration, two writers) produced `UNIQUE constraint failed: run_events.run_id, run_events.seq` and killed a live run mid-stream. The insert retries a few times before giving up.
 - `finish(run_id, status, usage=None, error=None) -> run` sets the final status, for example `finished`, `error`, `interrupted` or `cancelled`.
 - `list(design)` returns runs newest first; `get(run_id)` returns a run or `None`.
 - `events(run_id, after_seq=0, limit=None) -> [{"seq", "at", "type", "event"}]`, where `event` is the logged dict.
@@ -286,9 +291,14 @@ Messages with no `run_id` go to whichever run asks first, which is the next run 
    {"id": "review", "type": "open_threads", "severities": ["must_fix"], "max": 0},
    {"id": "warnings", "type": "drc_warnings", "max": 5}
  ],
- "budget": {"max_requests": 120, "max_minutes": 30}}
+ "budget": {"max_requests": 400, "max_minutes": 90}}
 ```
-The default goal is `drc` + `routed` + `review`.
+The default goal is `drc` + `routed` + `review`. The request budget is a runaway guard, not a
+design-size constraint: `usage_limits_for()` raises it to at least `60 + 6 x parts`, because a
+37-part board legitimately needs well over a hundred tool calls. When a goal passes, the passing
+version is recorded in `.harness/goal-met.json` (git-ignored, so no version is needed to store
+it); a later `check` that fails reports `goal_regression` with that version so the agent can
+`restore_version` instead of wandering.
 
 Beyond what the agent authors, a **baseline floor** is always appended with strict values: ERC
 errors 0, DRC errors 0, unconnected 0, schematic/board parity, BOM↔schematic↔board sync, the
