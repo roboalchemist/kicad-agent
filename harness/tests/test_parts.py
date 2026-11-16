@@ -119,3 +119,19 @@ def test_i2cdb_search_passes_filters_and_derives_pdf_state(monkeypatch) -> None:
     assert result["parts"][0]["id"] == "ti/A1"
     assert result["parts"][0]["has_pdf"] is True
     assert result["parts"][1]["has_pdf"] is False
+
+
+def test_datasheet_page_search_ranks_pages_and_returns_text(monkeypatch) -> None:
+    def fake_pages(mfg, mpn, pages=None):
+        return {"mfg": mfg, "mpn": mpn, "page_count": 3, "pages": [
+            {"n": 1, "text": "Absolute maximum ratings 50 V"},
+            {"n": 2, "text": "Typical characteristics graph output current"},
+            {"n": 3, "text": "Package drawing and thermal information graph"},
+        ]}
+
+    monkeypatch.setattr(parts, "datasheet_pages", fake_pages)
+    result = parts.search_datasheet("ti", "X", "graph thermal")
+    assert result["page_count"] == 3
+    assert result["pages"] == [3]
+    assert result["matches"][0]["page"] == 3
+    assert "Package drawing" in result["text"]

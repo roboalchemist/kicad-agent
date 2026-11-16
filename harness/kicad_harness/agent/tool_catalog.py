@@ -36,6 +36,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "find_parts": ("bom", "Search by part number or category; prefer basic parts with stock."),
     "search_datasheets": ("bom", "Search the i2cdb datasheet catalogue by MPN, manufacturer, package, category, PDF presence or attributes."),
     "read_part_datasheet": ("bom", "Confirm a pinout or rating; never invent pin numbers."),
+    "read_datasheet_page": ("bom", "View a datasheet page as an image for diagrams, graphs and package drawings."),
     "set_bom_alternates": ("bom", "Record second-source LCSC codes; they appear in the manufacturing BOM."),
     "set_part_lifecycle": ("bom", "Record MSL, ESD class, lead time and lifecycle for the BOM."),
     # -- schematic ------------------------------------------------------------------------
@@ -312,7 +313,8 @@ EXAMPLES: dict[str, str] = {
     "render": "render(kind='schematic')",
     "find_parts": "find_parts(query='NE555', basic_only=True)",
     "search_datasheets": "search_datasheets(manufacturer='ti', package='SOIC-8', has_pdf=True)",
-    "read_part_datasheet": "read_part_datasheet(mpn='NE555DR', pages='1-6')",
+    "read_part_datasheet": "read_part_datasheet(mpn='NE555DR', query='thermal resistance')",
+    "read_datasheet_page": "read_datasheet_page(mpn='ULN2003AIDRE4', page=11, dpi=130)",
     "generate_schematic": "generate_schematic(parts=[...], nets=[...])",
     "label_net": "label_net(target='U1.3', net='GND')",
     "connect_pins": "connect_pins(a='R1.2', b='C1.1', net='FILTER')",

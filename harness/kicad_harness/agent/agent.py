@@ -2809,6 +2809,39 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return ToolReturn(return_value={"ok": True, "ref": ref, **entry})
 
     @agent.tool
+    async def read_datasheet_page(
+        ctx: RunContext[HarnessDeps], mpn: str, page: int,
+        manufacturer: str | None = None, dpi: int = 130,
+    ) -> ToolReturn:
+        """Render one datasheet page as an image. Use this for pin diagrams, package drawings,
+        typical-characteristics graphs and tables that OCR flattens or misses. `page` is
+        1-based; the result includes the datasheet's total page count."""
+        from kicad_harness.engine import parts
+
+        try:
+            if not manufacturer:
+                hits = await asyncio.to_thread(parts.search_i2cdb, mpn, 10)
+                exact = next(
+                    (h for h in hits["parts"] if (h.get("mpn") or "").upper() == mpn.upper()), None
+                )
+                if not exact:
+                    return ToolReturn(return_value={
+                        "ok": False,
+                        "error": f"i2cdb has no record for {mpn!r}; near matches: "
+                                 f"{[h.get('mpn') for h in hits['parts'][:5]]}",
+                    })
+                manufacturer = exact["manufacturer"]
+            result = await asyncio.to_thread(
+                parts.render_datasheet_page, manufacturer, mpn, page, dpi=dpi)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        png = result.pop("png")
+        meta = {"ok": True, **result}
+        return ToolReturn(return_value=[json.dumps(meta),
+                                        BinaryContent(data=png, media_type="image/png")],
+                          metadata=[_snapshot(ctx.deps.state)])
+
+    @agent.tool
     async def search_datasheets(
         ctx: RunContext[HarnessDeps], query: str = "", manufacturer: str | None = None,
         category: str | None = None, package: str | None = None,
@@ -2835,9 +2868,15 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
     @agent.tool
     async def read_part_datasheet(
-        ctx: RunContext[HarnessDeps], mpn: str, manufacturer: str | None = None, pages: str | None = "1-6"
+        ctx: RunContext[HarnessDeps], mpn: str, manufacturer: str | None = None,
+        pages: str | None = None, query: str | None = None, max_matches: int = 5,
     ) -> ToolReturn:
-        """Read a part's datasheet (markdown) to confirm pinout and ratings. Needs the manufacturer slug or MPN."""
+        """Read a part's datasheet, or find the pages that answer a question.
+
+        Without `query`: returns Markdown for `pages` (default pages 1-6).
+        With `query`: searches every page (all pages unless `pages` is given), returns the matching
+        page numbers, a snippet per page, and the text of the top `max_matches` pages.
+        """
         from kicad_harness.engine import parts
 
         try:
@@ -2853,7 +2892,14 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                                  f"{[h.get('mpn') for h in hits['parts'][:5]]}",
                     })
                 manufacturer = exact["manufacturer"]
-            result = await asyncio.to_thread(parts.datasheet, manufacturer, mpn, pages)
+            if query:
+                result = await asyncio.to_thread(
+                    parts.search_datasheet, manufacturer, mpn, query,
+                    pages=pages, max_matches=max_matches,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    parts.datasheet, manufacturer, mpn, pages or "1-6")
         except Exception as exc:
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         result["ok"] = bool(result.get("has_pdf"))

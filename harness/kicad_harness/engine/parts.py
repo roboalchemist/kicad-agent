@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import sqlite3
+import tempfile
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -467,3 +468,140 @@ def check_part(mpn: str, lcsc: str | None = None) -> dict[str, Any]:
     if has_doc is False:
         result["notes"].append("no datasheet found: verify the pinout by another means before wiring it")
     return result
+
+
+def datasheet_pages(mfg: str, mpn: str, pages: str | None = None) -> dict[str, Any]:
+    """Page-level datasheet text as returned by ``i2cdb datasheet get --format json``."""
+    ref = f"{mfg.strip()}/{mpn.strip()}"
+    args = ["datasheet", "get", ref, "--format", "json", "--out", "-"]
+    if pages:
+        args += ["--page", pages]
+    if not i2cdb_available():
+        raise PartsError("the i2cdb CLI is not installed on this machine")
+    env = dict(os.environ)
+    env.setdefault("I2CDB_BEARER", _token())
+    try:
+        proc = subprocess.run(["i2cdb", *args], capture_output=True, text=True, timeout=120, env=env)
+    except subprocess.TimeoutExpired as exc:
+        raise PartsError(f"i2cdb datasheet {ref} timed out") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()[-3:]
+        raise PartsError("i2cdb datasheet failed: " + (" | ".join(detail) or "no output"))
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise PartsError(f"i2cdb returned unreadable datasheet JSON: {exc}") from exc
+    return {
+        "mfg": mfg,
+        "mpn": mpn,
+        "page_count": data.get("page_count"),
+        "pages": [
+            {"n": page.get("n"), "text": page.get("text") or ""}
+            for page in (data.get("pages") or [])
+        ],
+    }
+
+
+def search_datasheet(mfg: str, mpn: str, query: str, *, pages: str | None = None,
+                     max_matches: int = 5, context: int = 180) -> dict[str, Any]:
+    """Find the pages of a datasheet that mention ``query``.
+
+    Every whitespace-separated term must appear on the page (case-insensitive); results are
+    ranked by total term frequency. ``text`` is the concatenated text of the top pages, so one
+    call both locates the page and returns what is on it.
+    """
+    terms = [term for term in re.split(r"[^0-9A-Za-z_+.-]+", (query or "").lower()) if len(term) > 1]
+    if not terms:
+        raise PartsError("give a search query with at least one word, e.g. 'thermal resistance'")
+    data = datasheet_pages(mfg, mpn, pages)
+    matches: list[dict[str, Any]] = []
+    for page in data["pages"]:
+        text = page["text"] or ""
+        low = text.lower()
+        if not all(term in low for term in terms):
+            continue
+        score = sum(low.count(term) for term in terms)
+        positions = [low.find(term) for term in terms if low.find(term) >= 0]
+        at = min(positions) if positions else 0
+        snippet = re.sub(r"\s+", " ", text[max(0, at - context):at + context]).strip()
+        matches.append({"page": page["n"], "score": score, "snippet": snippet})
+    matches.sort(key=lambda item: (-item["score"], item["page"] if item["page"] is not None else 0))
+    top = matches[:max(1, int(max_matches))]
+    by_number = {page["n"]: page["text"] for page in data["pages"]}
+    text = "\n\n".join(f"## Page {m['page']}\n{by_number.get(m['page'], '')}" for m in top)
+    return {
+        "mfg": mfg,
+        "mpn": mpn,
+        "query": query,
+        "page_count": data["page_count"],
+        "pages": [m["page"] for m in matches],
+        "matches": top,
+        "has_pdf": bool(data["pages"]),
+        "text": text[:12000],
+    }
+
+
+def datasheet_pdf(mfg: str, mpn: str) -> bytes:
+    """The raw PDF bytes for ``mfg/mpn`` (empty bytes when i2cdb has no PDF)."""
+    ref = f"{mfg.strip()}/{mpn.strip()}"
+    if not i2cdb_available():
+        raise PartsError("the i2cdb CLI is not installed on this machine")
+    env = dict(os.environ)
+    env.setdefault("I2CDB_BEARER", _token())
+    try:
+        proc = subprocess.run(
+            ["i2cdb", "datasheet", "get", ref, "--format", "pdf", "--out", "-"],
+            capture_output=True, timeout=120, env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PartsError(f"i2cdb datasheet {ref} timed out") from exc
+    if proc.returncode != 0 or not proc.stdout.startswith(b"%PDF"):
+        detail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-3:]
+        raise PartsError("i2cdb PDF failed: " + (" | ".join(detail) or "no PDF returned"))
+    return proc.stdout
+
+
+def render_datasheet_page(mfg: str, mpn: str, page: int, *, dpi: int = 130) -> dict[str, Any]:
+    """Render one datasheet page to PNG, so diagrams and graphs are visible.
+
+    Text extraction cannot see a typical-characteristics curve or a package drawing; this turns
+    the page into an image the model can actually inspect.
+    """
+    number = int(page)
+    if number < 1:
+        raise PartsError("page must be >= 1")
+    dpi = max(80, min(int(dpi), 200))
+    pdf = datasheet_pdf(mfg, mpn)
+    with tempfile.TemporaryDirectory(prefix="harness-datasheet-") as tmp_name:
+        tmp = Path(tmp_name)
+        source = tmp / "datasheet.pdf"
+        source.write_bytes(pdf)
+        try:
+            info = subprocess.run(["pdfinfo", str(source)], capture_output=True, text=True, timeout=30)
+            pages = 0
+            for line in (info.stdout or "").splitlines():
+                if line.startswith("Pages:"):
+                    pages = int(line.split(":", 1)[1].strip())
+        except Exception:
+            pages = 0
+        if pages and number > pages:
+            raise PartsError(f"page {number} is out of range; the datasheet has {pages} pages")
+        prefix = tmp / "page"
+        proc = subprocess.run(
+            ["pdftoppm", "-f", str(number), "-l", str(number), "-png", "-r", str(dpi),
+             str(source), str(prefix)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if proc.returncode != 0:
+            raise PartsError("pdftoppm failed: " + (proc.stderr or "").strip()[:300])
+        images = sorted(tmp.glob("page*.png"))
+        if not images:
+            raise PartsError(f"pdftoppm produced no image for page {number}")
+        return {
+            "mfg": mfg,
+            "mpn": mpn,
+            "page": number,
+            "page_count": pages or None,
+            "dpi": dpi,
+            "png": images[0].read_bytes(),
+        }
