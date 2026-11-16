@@ -62,6 +62,7 @@ def test_create_imports_the_board(ws, config, board_src):
     assert (ws.path / ".gitignore").read_text() == GITIGNORE
     assert GITIGNORE.split() == [
         "*.kicad_prl", "fp-info-cache", "*-backups/", "~*.lck", ".history/", "skidl/", "*_skidl.erc",
+        ".harness/",
     ]
     assert ws.goal() == DEFAULT_GOAL
     assert [c["id"] for c in ws.goal()["criteria"]] == ["drc", "routed", "review", "parity"]
@@ -449,7 +450,7 @@ def test_workspace_records_the_version_that_met_the_goal(ws) -> None:
     ws.record_goal_met()
     assert ws.goal_met_at()["sha"] == head
     assert ws.goal_met_at()["when"]
-    # Recording the same version twice must not dirty the workspace again.
-    before = (ws.path / "project.json").read_text()
+    # The note is git-ignored: recording it never dirties the tree or makes a version.
+    assert ws.dirty() is False
     ws.record_goal_met()
-    assert (ws.path / "project.json").read_text() == before
+    assert ws.goal_met_at()["sha"] == head

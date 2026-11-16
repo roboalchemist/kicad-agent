@@ -51,6 +51,7 @@ async def test_draw_tidy_route_board_and_manufacture(services, new_project) -> N
         [("set_component_height", {"ref": "C1", "height_mm": 0.6})],
         [("set_component_height", {"ref": "C2", "height_mm": 0.6})],
         [("set_enclosure", {"height_mm": 10.0, "clearance_mm": 5.0})],
+        [("export_manufacturing", {})],
         [("check", {})],
         "done",
     ])
@@ -89,6 +90,10 @@ async def test_draw_tidy_route_board_and_manufacture(services, new_project) -> N
         "R1", "R2", "C1", "C2",
     }
     assert {"VIN", "VOUT", "GND"} <= set(doc.nets())
+
+    # The manufacturing package is committed with the design, not left as untracked output.
+    assert (ws.path / "manufacturing" / "manifest.json").is_file()
+    assert ws.dirty() is False, "export_manufacturing left uncommitted files"
 
     # Board: created from the schematic.
     assert ws.phase() == "board" and ws.board_path.is_file()

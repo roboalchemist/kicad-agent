@@ -41,7 +41,11 @@ BOARD_FILE = "board.kicad_pcb"
 SCHEMATIC_FILE = "schematic.kicad_sch"
 GOAL_FILE = "goal.json"
 PROJECT_FILE = "project.json"
-GITIGNORE = "*.kicad_prl\nfp-info-cache\n*-backups/\n~*.lck\n.history/\nskidl/\n*_skidl.erc\n"
+# Which version last met the goal. Local to the checkout (git-ignored): it is a cache of a fact
+# about an immutable commit, and keeping it out of the tree means no commit is needed to store it.
+GOAL_MET_FILE = ".harness/goal-met.json"
+GITIGNORE = ("*.kicad_prl\nfp-info-cache\n*-backups/\n~*.lck\n.history/\nskidl/\n"
+             "*_skidl.erc\n.harness/\n")
 
 # A design moves through phases: the agent draws the schematic first, then lays out the board
 # the schematic was netlisted into. See DESIGN.md, "Phases".
@@ -589,27 +593,37 @@ class Workspace:
             (self.path / PROJECT_FILE).write_text(_dump_goal(project), encoding="utf-8")
 
     def record_goal_met(self, sha: str | None = None) -> None:
-        """Remember the version that last met the goal (committed with the next change).
+        """Remember the version that last met the goal.
 
         An agent that keeps working after the goal is met can regress the design; recording the
-        good version turns "it used to pass" into something `restore_version` can act on.
+        good version turns "it used to pass" into something `restore_version` can act on. The
+        note is git-ignored: it describes an immutable commit, so it never needs a version of its
+        own and never leaves the working tree dirty.
         """
         version = sha or self.head()
         if not version:
             return
         import datetime
 
+        path = self.path / GOAL_MET_FILE
         with self.lock:
-            project = self.project()
-            if project.get("goal_met_at") == version:
-                return
-            project["goal_met_at"] = version
-            project["goal_met_when"] = datetime.datetime.now(
-                datetime.timezone.utc).isoformat(timespec="seconds")
-            (self.path / PROJECT_FILE).write_text(_dump_goal(project), encoding="utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "sha": version,
+                "when": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            }, indent=2) + "\n", encoding="utf-8")
 
     def goal_met_at(self) -> dict[str, Any] | None:
         """``{"sha": ..., "when": ...}`` for the last version that met the goal, if any."""
+        path = self.path / GOAL_MET_FILE
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                data = None
+            if isinstance(data, dict) and data.get("sha"):
+                return {"sha": str(data["sha"]), "when": data.get("when")}
+        # Older workspaces kept it in project.json; keep reading that.
         project = self.project()
         sha = project.get("goal_met_at")
         if not sha:

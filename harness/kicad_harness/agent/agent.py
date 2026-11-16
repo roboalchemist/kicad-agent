@@ -2165,7 +2165,17 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             manifest = await asyncio.to_thread(manufacturing.export, ws, ctx.deps.services.config)
         except Exception as exc:
             return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
-        return ToolReturn(return_value={"ok": True, **manifest})
+        # The package lives in the workspace, so it must be committed with the design: an
+        # uncommitted export disappears the moment anyone restores a version, and "current"
+        # would then describe files nobody can check out.
+        version = await asyncio.to_thread(
+            ws.commit, "Export the manufacturing package", author="agent",
+            trailers=_trailers(ctx, "export_manufacturing"))
+        await _sync_state(ctx, bump=False)
+        if version is not None and ctx.deps.on_commit:
+            ctx.deps.on_commit({"tool": "export_manufacturing", **_version_brief(version)})
+        return ToolReturn(return_value={"ok": True, **manifest, "version": _version_brief(version)},
+                          metadata=[_snapshot(ctx.deps.state)])
 
     @agent.tool(sequential=True)
     async def add_copper_zone(
