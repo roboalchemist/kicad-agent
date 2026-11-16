@@ -350,6 +350,13 @@ def _free(box, occupied: list, boxes: dict[str, tuple],
     return True
 
 
+def _crowding(box, occupied: list, boxes: dict[str, tuple]) -> float:
+    """How much a label box would collide with labels or symbol bodies, in square mm."""
+    total = sum(_overlap_area(box, other) for other in occupied)
+    total += sum(_overlap_area(box, body) for body in boxes.values())
+    return round(total, 3)
+
+
 def tidy(doc: Schematic, *, paper: str | None = None) -> dict[str, Any]:
     """Relayout the sheet as a packed flow of symbols with a labelled stub on every connected pin.
 
@@ -674,7 +681,8 @@ def _segments_touch(a: tuple[float, float], b: tuple[float, float],
 
 def _stub_clashes(start: tuple[float, float], end: tuple[float, float],
                   pin_anchors: set[tuple[float, float]],
-                  drawn: list[tuple[tuple[float, float], tuple[float, float]]]) -> bool:
+                  drawn: list[tuple[tuple[float, float], tuple[float, float]]],
+                  bodies: list[tuple[float, float, float, float]] | None = None) -> bool:
     """True when a pin-to-label stub would join a pin to something it does not belong to.
 
     A stub that ends on another pin, runs through one, or meets another net's stub makes KiCad
@@ -691,6 +699,44 @@ def _stub_clashes(start: tuple[float, float], end: tuple[float, float],
             return True
     for c, d in drawn:
         if _segments_touch(a, b, c, d):
+            return True
+    # A stub that runs through a part body reads as a wire crossing that part.
+    middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    for box in bodies or ():
+        if box[0] + 0.05 < middle[0] < box[2] - 0.05 and box[1] + 0.05 < middle[1] < box[3] - 0.05:
+            return True
+    return False
+
+
+def _segment_hits_box(a: tuple[float, float], b: tuple[float, float],
+                      box: tuple[float, float, float, float], margin: float = 0.05) -> bool:
+    """True when the segment passes through the box's interior (touching an edge is fine)."""
+    x1, y1 = a
+    x2, y2 = b
+    left, top, right, bottom = box[0] + margin, box[1] + margin, box[2] - margin, box[3] - margin
+    t0, t1 = 0.0, 1.0
+    dx, dy = x2 - x1, y2 - y1
+    for p, q in ((-dx, x1 - left), (dx, right - x1), (-dy, y1 - top), (dy, bottom - y1)):
+        if p == 0:
+            if q < 0:
+                return False
+        else:
+            t = q / p
+            if p < 0:
+                if t > t1:
+                    return False
+                t0 = max(t0, t)
+            else:
+                if t < t0:
+                    return False
+                t1 = min(t1, t)
+    return t1 > t0
+
+
+def _path_hits_body(points: list[tuple[float, float]],
+                    boxes: list[tuple[float, float, float, float]]) -> bool:
+    for a, b in zip(points, points[1:]):
+        if any(_segment_hits_box(a, b, box) for box in boxes):
             return True
     return False
 
@@ -772,6 +818,7 @@ def _lay_out(
             "top": vertical if need.get("top") else small,
             "bottom": vertical if need.get("bottom") else small,
         }
+
 
     # ---- circuit flow: controller at the centre of the signal graph, then each stage outward
     supply_islands = [group for group in islands[1:]]
@@ -967,9 +1014,9 @@ def _lay_out(
                 directions += [(1.0, 0.0), (-1.0, 0.0)]
             else:
                 directions += [(0.0, 1.0), (0.0, -1.0)]
-            candidates: list[tuple[bool, bool, tuple[float, float], float, str,
+            candidates: list[tuple[bool, float, tuple[float, float], float, str,
                                     tuple[float, float]]] = []
-            for length_scale in (1.0, 1.6, 2.4):
+            for length_scale in (0.5, 0.75, 1.0, 1.6, 2.4, 3.2, 4.0):
                 for dx, dy in directions:
                     for anchor_side in ("left", "right") if abs(dy) > abs(dx) else (
                         "left" if dx >= 0 else "right",
@@ -978,21 +1025,25 @@ def _lay_out(
                                pin[1] + STUB * scale * length_scale * dy)
                         box = _box_at(name, end[0], end[1], anchor_side)
                         candidates.append((
-                            _stub_clashes(pin, end, pin_anchors, drawn),
-                            not _free(box, placed_labels, placed_boxes, page_size),
+                            _stub_clashes(pin, end, pin_anchors, drawn,
+                                          list(placed_boxes.values())),
+                            _crowding(box, placed_labels, placed_boxes),
                             (dx, dy), length_scale, anchor_side, end,
                         ))
             # Prefer a stub that is both safe and clear; accept a merely safe one rather than
-            # risk a short, and only then fall back to the shortest natural stub.
-            chosen = (next((c for c in candidates if not c[0] and not c[1]), None)
-                      or next((c for c in candidates if not c[0]), None))
+            # risk a short, and only then fall back to the shortest natural stub. When nothing
+            # is clear, take the least crowded spot instead of the first busy one — that is what
+            # left two labels facing each other across a 15 mm channel.
+            chosen = (next((c for c in candidates if not c[0] and c[1] == 0), None)
+                      or min((c for c in candidates if not c[0]),
+                             key=lambda c: c[1], default=None))
             if chosen is None:
                 dx, dy = directions[0]
-                chosen = (True, True, (dx, dy), 0.25,
+                chosen = (True, 0.0, (dx, dy), 0.25,
                           "left" if dx >= 0 else "right",
                           (pin[0] + STUB * scale * 0.25 * dx,
                            pin[1] + STUB * scale * 0.25 * dy))
-            _clash, _busy, (dx, dy), length_scale, anchor_side, end = chosen
+            _clash, _overlap, (dx, dy), length_scale, anchor_side, end = chosen
             doc.add_wire([pin, end])
             doc.add_label(name, *end, anchor=anchor_side)
             drawn.append((NetNode(*pin).key(), NetNode(*end).key()))
@@ -1100,8 +1151,19 @@ def route(doc: Schematic, *, max_mm: float = 80.0) -> dict[str, Any]:
         if math.dist(a, b) > max_mm:
             skipped.append({"net": name, "reason": f"pins are {math.dist(a, b):.0f} mm apart"})
             continue
-        points = _route_between(a, _pin_outward(doc, ref_a, pin_a),
-                                b, _pin_outward(doc, ref_b, pin_b), STUB)
+        # The two symbols' own bodies are excluded: a pin's anchor can sit on (or just inside)
+        # its own body box, and that is not a wire crossing a part.
+        boxes = [box for ref, box in symbol_boxes(doc).items() if ref not in (ref_a, ref_b)]
+        candidates = [
+            _route_between(a, _pin_outward(doc, ref_a, pin_a),
+                           b, _pin_outward(doc, ref_b, pin_b), STUB),
+            [a, b],
+        ]
+        points = next((candidate for candidate in candidates
+                       if not _path_hits_body(candidate, boxes)), None)
+        if points is None:
+            skipped.append({"net": name, "reason": "every wire between the pins crosses a part"})
+            continue
         added = doc.add_wire(points)
         if _partitions(doc) != target:
             doc.tree[:] = [child for child in doc.tree

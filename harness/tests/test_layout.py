@@ -254,3 +254,19 @@ def test_a_stub_never_lands_on_another_pin_or_meets_another_stub() -> None:
                                 [((0.0, 2.0), (0.0, 7.0))]) is True
     assert layout._stub_clashes((0.0, 0.0), (5.0, 0.0), {(0.0, 0.0)},
                                 [((5.0, -2.0), (5.0, 2.0))]) is True
+
+
+def test_the_router_refuses_a_wire_that_crosses_a_third_part(
+    tmp_path: Path, libraries, two_pin: str
+) -> None:
+    """A routed wire must not be drawn through a part it does not connect to."""
+    doc = sch.Schematic.create(tmp_path / "router-body.kicad_sch", libraries=libraries)
+    doc.add_symbol(two_pin, "R1", 40.0, 60.0)
+    doc.add_symbol(two_pin, "R2", 70.0, 64.0)   # sits on the run between R1 and R3
+    doc.add_symbol(two_pin, "R3", 100.0, 60.0)
+    doc.add_label("LONG", *doc.pin_position(doc._placement("R1"), "2"))
+    doc.add_label("LONG", *doc.pin_position(doc._placement("R3"), "1"))
+
+    report = layout.route(doc)
+    assert layout.analyze(doc)["counts"]["wires_through_symbols"] == 0
+    assert any("crosses a part" in item["reason"] for item in report["skipped"]), report
