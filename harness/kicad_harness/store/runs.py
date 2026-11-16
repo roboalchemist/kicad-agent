@@ -78,17 +78,32 @@ class Runs:
             raise TypeError(f"event must be a dict, not {type(event).__name__}")
         kind = data.get("type")
         payload = json.dumps(data, default=str, ensure_ascii=False, separators=(",", ":"))
-        with self._store.tx() as conn:
-            row = conn.execute("SELECT last_seq FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-            if row is None:
-                raise KeyError(f"no run {run_id}")
-            seq = row["last_seq"] + 1
-            conn.execute("UPDATE runs SET last_seq = ? WHERE run_id = ?", (seq, run_id))
-            conn.execute(
-                "INSERT INTO run_events (run_id, seq, type, at, data) VALUES (?, ?, ?, ?, ?)",
-                (run_id, seq, None if kind is None else str(kind), time.time(), payload),
-            )
-        return seq
+        # The events table is the authority on the next seq: a cached ``runs.last_seq`` that
+        # drifted (a reopened run, a migration, two writers racing on the same run) produced
+        # "UNIQUE constraint failed: run_events.run_id, run_events.seq" mid-run and killed it.
+        # MAX(seq)+1 inside BEGIN IMMEDIATE is consistent, and the retry covers a writer that
+        # slipped in between the read and the insert.
+        for attempt in range(4):
+            try:
+                with self._store.tx() as conn:
+                    row = conn.execute(
+                        "SELECT COALESCE(MAX(seq), 0) AS last FROM run_events WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchone()
+                    if conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone() is None:
+                        raise KeyError(f"no run {run_id}")
+                    seq = int(row["last"]) + 1
+                    conn.execute(
+                        "INSERT INTO run_events (run_id, seq, type, at, data) VALUES (?, ?, ?, ?, ?)",
+                        (run_id, seq, None if kind is None else str(kind), time.time(), payload),
+                    )
+                    conn.execute("UPDATE runs SET last_seq = ? WHERE run_id = ?", (seq, run_id))
+                return seq
+            except sqlite3.IntegrityError:
+                if attempt == 3:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+        raise AssertionError("unreachable")
 
     def interrupt_stale(self) -> int:
         """Mark runs still ``running`` as ``interrupted`` (called at startup after a crash/restart)."""

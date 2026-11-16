@@ -350,3 +350,16 @@ def test_moves_several_reference_texts_in_one_save(engine, board):
     index = engine.index(board)
     u1 = next(f for f in index["footprints"] if f["ref"] == "U1")
     assert (u1["ref_text"]["x"], u1["ref_text"]["y"]) == (4.0, 5.0)
+
+
+def test_normalize_track_widths_raises_thin_autorouted_tracks(engine, board):
+    """Freerouting can emit tracks narrower than the class it was given; never leave them thin."""
+    gnd = engine.add_track(board, "GND", [[1, 1], [8, 1]], width=0.15, layer="F.Cu")["uuids"][0]
+    vcc = engine.add_track(board, "VCC", [[1, 3], [8, 3]], width=0.15, layer="F.Cu")["uuids"][0]
+    result = engine.call("normalize_track_widths", board=str(board),
+                         classes=[{"nets": ["GND"], "width": 0.5},
+                                  {"nets": ["*"], "width": 0.25}],
+                         default=0.25)
+    assert result["widened"] == 2 and result["thinnest_before_mm"] == 0.15
+    widths = {track["uuid"]: track["width"] for track in engine.index(board)["tracks"]}
+    assert widths[gnd] == 0.5 and widths[vcc] == 0.25

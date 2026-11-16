@@ -438,3 +438,18 @@ def test_concurrent_commits_under_the_lock(ws, config):
         changed = git(ws, "diff-tree", "--no-commit-id", "--name-only", "-r", v["sha"]).split()
         assert changed == [f"note-{i}.txt"]
     assert not ws.dirty()
+
+
+def test_workspace_records_the_version_that_met_the_goal(ws) -> None:
+    """So a later regression can be undone with restore_version instead of guesswork."""
+    assert ws.goal_met_at() is None
+    set_thickness(ws, 1.7)
+    ws.commit("Make it thicker", author="agent")
+    head = ws.head()
+    ws.record_goal_met()
+    assert ws.goal_met_at()["sha"] == head
+    assert ws.goal_met_at()["when"]
+    # Recording the same version twice must not dirty the workspace again.
+    before = (ws.path / "project.json").read_text()
+    ws.record_goal_met()
+    assert (ws.path / "project.json").read_text() == before

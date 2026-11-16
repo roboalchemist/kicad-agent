@@ -366,3 +366,33 @@ def test_runs_last_updated_moves_on_start_and_finish_only(store):
     assert store.runs.last_updated("d") == started
     store.runs.finish("r1", "finished")
     assert store.runs.last_updated("d") > started
+
+
+def test_run_events_survive_a_drifted_last_seq_and_concurrent_writers(store) -> None:
+    """Regression: a stale seq counter aborted a live run with a UNIQUE constraint failure."""
+    import threading
+
+    store.runs.start("pi-relay", run_id="run-drift", model="m", prompt="p")
+    assert store.runs.event("run-drift", {"type": "RUN_STARTED"}) == 1
+    # A cached counter that fell behind the events must not matter.
+    with store.tx() as conn:
+        conn.execute("UPDATE runs SET last_seq = 0 WHERE run_id = 'run-drift'")
+    assert store.runs.event("run-drift", {"type": "TEXT_MESSAGE_CONTENT"}) == 2
+
+    seen: list[int] = []
+    errors: list[Exception] = []
+
+    def writer() -> None:
+        try:
+            for _ in range(10):
+                seen.append(store.runs.event("run-drift", {"type": "TEXT_MESSAGE_CONTENT"}))
+        except Exception as exc:  # pragma: no cover - the assertion below reports it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, errors
+    assert sorted(seen) == list(range(3, 43))

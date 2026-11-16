@@ -152,6 +152,15 @@ def autoroute(engine: Engine, board: str | os.PathLike[str], config: Config | No
             tail = " | ".join(((proc.stdout or "") + (proc.stderr or "")).strip().splitlines()[-8:])
             raise EngineError("FreeroutingFailed", f"no session written (exit {proc.returncode}): {tail}")
         counts = engine.import_ses(board_path, ses)
+        # The session's tracks are not guaranteed to honour the class widths it was given:
+        # Freerouting's neckdown and its mil-based defaults can come back under the board
+        # minimum, which is a DRC error on every one of them. Raise them once, here.
+        classes = [{"nets": spec.get("nets") or [], "width": spec.get("width")}
+                   for spec in (netclasses or {}).values() if spec.get("width")]
+        default = ((netclasses or {}).get("Default") or {}).get("width")
+        if classes or default:
+            counts.update(engine.call("normalize_track_widths", board=str(board_path),
+                                      classes=classes, default=default))
     report = kicad_cli.drc(board_path, config=cfg)
     unrouted = report["counts"]["unconnected"]
     return {"routed": unrouted == 0, "unrouted": unrouted, "tracks": counts["tracks"], "vias": counts["vias"],

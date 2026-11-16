@@ -588,6 +588,34 @@ class Workspace:
         with self.lock:
             (self.path / PROJECT_FILE).write_text(_dump_goal(project), encoding="utf-8")
 
+    def record_goal_met(self, sha: str | None = None) -> None:
+        """Remember the version that last met the goal (committed with the next change).
+
+        An agent that keeps working after the goal is met can regress the design; recording the
+        good version turns "it used to pass" into something `restore_version` can act on.
+        """
+        version = sha or self.head()
+        if not version:
+            return
+        import datetime
+
+        with self.lock:
+            project = self.project()
+            if project.get("goal_met_at") == version:
+                return
+            project["goal_met_at"] = version
+            project["goal_met_when"] = datetime.datetime.now(
+                datetime.timezone.utc).isoformat(timespec="seconds")
+            (self.path / PROJECT_FILE).write_text(_dump_goal(project), encoding="utf-8")
+
+    def goal_met_at(self) -> dict[str, Any] | None:
+        """``{"sha": ..., "when": ...}`` for the last version that met the goal, if any."""
+        project = self.project()
+        sha = project.get("goal_met_at")
+        if not sha:
+            return None
+        return {"sha": str(sha), "when": project.get("goal_met_when")}
+
     def requirements(self) -> list[dict[str, Any]]:
         """Countable demands from the brief, stored at creation (derived if absent)."""
         from ..agent import requirements as requirements_mod

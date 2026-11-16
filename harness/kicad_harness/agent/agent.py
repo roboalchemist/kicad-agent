@@ -197,6 +197,7 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
         }
         evaluation = goals.evaluate(ws.goal(), {}, fake, threads)
         ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
+        _record_goal_met(ws, evaluation)
         return evaluation
     board_hash, index = await _working(ctx)
     drc = await asyncio.to_thread(svc.artifacts.drc, board_hash)
@@ -225,7 +226,29 @@ async def _evaluate(ctx: RunContext[HarnessDeps]) -> dict:
     }
     evaluation = goals.evaluate(ws.goal(), index, drc, threads)
     ctx.deps.state.goal = GoalStatus.model_validate(evaluation)
+    _record_goal_met(ws, evaluation)
     return evaluation
+
+
+def _record_goal_met(ws, evaluation: dict[str, Any]) -> None:
+    """Remember the version that met the goal so a later regression is recoverable."""
+    if not evaluation.get("met"):
+        return
+    try:
+        ws.record_goal_met()
+    except Exception:
+        pass
+
+
+def _goal_regression(ws, evaluation: dict[str, Any]) -> dict[str, Any] | None:
+    """The version that last met the goal, when the current state does not."""
+    if evaluation.get("met"):
+        return None
+    last = ws.goal_met_at()
+    if not last:
+        return None
+    return {**last, "hint": ("the goal was met at this version; keep going, but restore_version "
+                             "it if the current attempt does not converge")}
 
 def _schematic_layout_facts(ws) -> dict[str, Any] | None:
     """Legibility measurement of the schematic, or None when it cannot be read.
@@ -1213,6 +1236,9 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 "goal_met": evaluation["met"],
                 "criteria": evaluation["criteria"],
             }
+            regression = _goal_regression(ws, evaluation)
+            if regression:
+                result["goal_regression"] = regression
             if detail:
                 result["erc_violations"] = erc_violations[:15]
             try:
@@ -1276,6 +1302,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
             "unconnected": [brief(v) for v in drc.get("unconnected", [])[:20]],
             "goal_met": evaluation["met"],
             "criteria": evaluation["criteria"],
+            "goal_regression": _goal_regression(ws, evaluation),
             "rules": {
                 "netclasses": rules.get("netclasses"),
                 "stackup": rules.get("stackup"),

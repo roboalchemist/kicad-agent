@@ -703,6 +703,55 @@ def set_track_width(board, nets, width):
 
 
 @rpc
+def normalize_track_widths(board, classes=None, default=None):
+    """Widen tracks the autorouter made too thin, per net class.
+
+    Freerouting can emit a track narrower than the class width it was given (a neckdown, or its
+    own default in mils). A narrower track is never intended and is always a DRC error, so raise
+    every track to its class width after the session is imported.
+    """
+    import fnmatch
+
+    patterns: list[tuple[str, float]] = []
+    # Specific classes win over broad ones, whatever order the caller passed them in.
+    ordered = sorted(classes or [],
+                     key=lambda spec: any("*" in str(p) for p in (spec.get("nets") or [])))
+    for spec in ordered:
+        width = _num(spec.get("width"), "width", positive=True) if spec.get("width") else None
+        for pattern in _as_list(spec.get("nets") or [], "nets"):
+            if width:
+                patterns.append((str(pattern), width))
+    fallback = _num(default, "default", positive=True) if default else None
+
+    def target(net: str) -> float | None:
+        for pattern, width in patterns:
+            if fnmatch.fnmatchcase(net, pattern):
+                return width
+        return fallback
+
+    def edit(b):
+        widened = 0
+        thinnest = None
+        seen: dict[str, float] = {}
+        for track in b.GetTracks():
+            if track.GetClass() != "PCB_TRACK":
+                continue
+            want = target(track.GetNetname())
+            if want is None:
+                continue
+            was = track.GetWidth() / 1e6
+            seen[track.GetNetname()] = min(seen.get(track.GetNetname(), was), was)
+            if was < want - 0.001:
+                track.SetWidth(_iu(want))
+                widened += 1
+        if seen:
+            thinnest = round(min(seen.values()), 4)
+        return {"widened": widened, "thinnest_before_mm": thinnest}
+
+    return _edit(board, edit, refill=False)
+
+
+@rpc
 def move_reference_texts(board, moves):
     """Move several reference designators in one load/save (silkscreen placement)."""
     if not isinstance(moves, list):
