@@ -14,10 +14,13 @@ import {
   fitView,
   getStore,
   handlePick,
+  MIN_LAYER_ALPHA,
+  resetLayerAlpha,
   setMode,
   setRev,
   setBoardSize,
   setSide as setBoardSide,
+  setLayerAlpha,
   showAllLayers,
   toggleGrid,
   toggleLayer,
@@ -409,6 +412,10 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
                         className={`board-bg-layer ${side === "back" ? "flipped" : ""}`}
                         data-testid={`board-layer-${layer.id}`}
                         data-layer={layer.id}
+                        data-alpha={h.layerAlpha[layer.id] ?? 1}
+                        // Translucency is per layer, so a dense front copper pour can sit over
+                        // silkscreen without hiding it.
+                        style={{ opacity: h.layerAlpha[layer.id] ?? 1 }}
                       >
                         {layer.geom.bg}
                       </div>
@@ -446,8 +453,11 @@ export function BoardViewer({ onOpenThread }: { onOpenThread: (n: number) => voi
           <LayerPanel
             side={side === "back" ? "back" : "front"}
             hidden={h.hiddenLayers}
+            alpha={h.layerAlpha}
             onToggle={toggleLayer}
             onShowAll={showAllLayers}
+            onAlpha={setLayerAlpha}
+            onResetAlpha={() => resetLayerAlpha()}
           />
         )}
         <FitButton onFit={() => fitView(size.w, size.h)} />
@@ -769,28 +779,49 @@ function PickPopover() {
 }
 
 /**
- * KiCad-style layer visibility panel: one row per plot layer of the current side, with its
- * plotted colour, so layers can be shown together or hidden one at a time instead of only
- * choosing a whole side.
+ * KiCad-style layer panel: one row per plot layer of both sides, with its plotted colour.
+ *
+ * A row has two independent settings: the checkbox shows or hides the layer, and the slider
+ * makes it translucent, so a layer can stay on screen as context under the one being worked on.
+ * Rendering, not just the list, is what the slider drives — the viewer paints each layer at that
+ * opacity.
  */
 function LayerPanel({
   side,
   hidden,
+  alpha,
   onToggle,
   onShowAll,
+  onAlpha,
+  onResetAlpha,
 }: {
   side: "front" | "back";
   hidden: string[];
+  alpha: Record<string, number>;
   onToggle: (layer: string) => void;
   onShowAll: () => void;
+  onAlpha: (layer: string, value: number) => void;
+  onResetAlpha: () => void;
 }) {
+  const anyTranslucent = Object.keys(alpha).length > 0;
   return (
     <div className="layer-panel" data-testid="layer-panel">
       <div className="layer-panel-head">
         <span>Layers</span>
-        <button className="link" onClick={onShowAll} disabled={hidden.length === 0} data-testid="layers-show-all">
-          show all
-        </button>
+        <span className="layer-panel-actions">
+          <button
+            className="link"
+            onClick={onResetAlpha}
+            disabled={!anyTranslucent}
+            title="Draw every layer fully opaque"
+            data-testid="layers-reset-alpha"
+          >
+            opaque
+          </button>
+          <button className="link" onClick={onShowAll} disabled={hidden.length === 0} data-testid="layers-show-all">
+            show all
+          </button>
+        </span>
       </div>
       {/* Both sides are listed: a layer can be hidden before switching to it, as in KiCad. */}
       {LAYER_PANEL_GROUPS.map((group) => (
@@ -804,22 +835,42 @@ function LayerPanel({
           </div>
           {group.layers.map((layer) => {
             const on = !hidden.includes(layer.id);
+            const value = alpha[layer.id] ?? 1;
+            const pct = Math.round(value * 100);
             return (
-              <label
+              <div
                 key={layer.id}
                 className={`layer-row ${on ? "" : "off"}`}
                 data-testid={`layer-row-${layer.id}`}
-                title={`${on ? "Hide" : "Show"} ${layer.label}`}
               >
+                <label className="layer-toggle" title={`${on ? "Hide" : "Show"} ${layer.label}`}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => onToggle(layer.id)}
+                    data-testid={`layer-toggle-${layer.id}`}
+                  />
+                  <span className="layer-swatch" style={{ background: layer.color }} aria-hidden="true" />
+                  <span className="layer-name">{layer.label}</span>
+                </label>
                 <input
-                  type="checkbox"
-                  checked={on}
-                  onChange={() => onToggle(layer.id)}
-                  data-testid={`layer-toggle-${layer.id}`}
+                  className="layer-alpha"
+                  type="range"
+                  min={Math.round(MIN_LAYER_ALPHA * 100)}
+                  max={100}
+                  step={5}
+                  value={pct}
+                  disabled={!on}
+                  onChange={(event) => onAlpha(layer.id, Number(event.target.value) / 100)}
+                  onDoubleClick={() => onAlpha(layer.id, 1)}
+                  title={`${layer.label} opacity ${pct}% — double-click to reset`}
+                  aria-label={`${layer.label} opacity`}
+                  data-testid={`layer-alpha-${layer.id}`}
                 />
-                <span className="layer-swatch" style={{ background: layer.color }} aria-hidden="true" />
-                <span className="layer-name">{layer.label}</span>
-              </label>
+                <span className="layer-alpha-value" data-testid={`layer-alpha-value-${layer.id}`}>
+                  {pct < 100 ? `${pct}%` : ""}
+                </span>
+              </div>
             );
           })}
         </div>

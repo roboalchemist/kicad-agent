@@ -1063,7 +1063,7 @@ button.stop-btn {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 132px;
+  min-width: 208px;
   padding: 8px 8px 9px;
   background: var(--overlay);
   border: 1px solid var(--overlay-border);
@@ -1082,6 +1082,10 @@ button.stop-btn {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 10px;
+}
+.layer-panel-actions {
+  display: flex;
+  gap: 8px;
 }
 .layer-group {
   display: flex;
@@ -1116,18 +1120,46 @@ button.stop-btn {
 .layer-row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   padding: 3px 4px;
   border-radius: 5px;
-  cursor: pointer;
 }
 .layer-row:hover {
   background: rgba(255, 255, 255, 0.06);
 }
-.layer-row input {
+.layer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+}
+.layer-row input[type="checkbox"] {
   margin: 0;
   accent-color: #2f6feb;
   cursor: pointer;
+}
+/* Per-layer translucency: the swarm of copper can stay visible without becoming wallpaper. */
+.layer-alpha {
+  flex: none;
+  width: 54px;
+  height: 12px;
+  margin: 0;
+  accent-color: #2f6feb;
+  cursor: pointer;
+}
+.layer-alpha:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.layer-alpha-value {
+  flex: none;
+  width: 26px;
+  text-align: right;
+  color: #93a4b8;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
 }
 .layer-swatch {
   width: 9px;

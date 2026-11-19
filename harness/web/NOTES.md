@@ -28,6 +28,7 @@ Walkthrough drivers (not playwright tests, just scripted browsers):
 cd harness/web
 node e2e/walk.mjs                        # board flows: basics review measure select revview diff back3d branch restore
 node e2e/agent.mjs                       # agent flows: chat goal approve activity
+node e2e/layers.mjs                      # layer panel: show/hide, per-layer opacity, persistence
 ```
 
 `revview`, `diff` and `restore` need ≥2 versions, so run them after the agent has made edits.
@@ -42,6 +43,9 @@ Board viewer (walk.mjs, screenshots 01–14):
 - View old revision → read-only banner + "Back to latest" (09-rev-banner.png).
 - Diff overlay from Versions "compare" (10-diff-overlay.png).
 - Back tab: B.Cu tracks/vias only, correct hit-shape side filtering (11-back-side.png).
+- Layer panel: one row per plotted layer with a visibility checkbox and an opacity slider
+  (10-100%). A translucent layer keeps its colour and stays pickable while what is under it
+  shows through; the setting persists across reloads (30-layer-opacity.png).
 - 3D tab: kicad render via REST, preset buttons top/bottom/iso/iso-back (12-3d.png).
 - Branch create ("branch…" modal) + switch via dropdown, verified through `/branches` (13-branch.png).
 - Restore old version → new HEAD commit "Restore …", verified through `/versions` (14-restored.png).

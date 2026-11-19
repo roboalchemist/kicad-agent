@@ -22,6 +22,9 @@ import type {
 export type Side = "front" | "back" | "3d";
 export type ViewerMode = "select" | "comment" | "measure";
 
+/** The faintest a layer can be drawn and still be found; hiding it is the way to make it 0. */
+export const MIN_LAYER_ALPHA = 0.1;
+
 /** A plot layer of one board side: what the right-hand layer panel toggles. */
 export interface BoardLayer {
   id: string;
@@ -113,6 +116,8 @@ export interface HarnessData {
   layerSvgs: Record<string, string>;
   /** Layers the user has hidden in the right-hand layer panel (persisted). */
   hiddenLayers: string[];
+  /** Per-layer opacity, 0.1-1; an absent layer is fully opaque (persisted). */
+  layerAlpha: Record<string, number>;
   svgSide: "front" | "back" | null;
   svgKey: number; // bump to force reload (cache-bust)
   threads: Thread[];
@@ -162,6 +167,7 @@ const initial: HarnessData = {
   svg: null,
   layerSvgs: {},
   hiddenLayers: hiddenLayersFromStorage(),
+  layerAlpha: layerAlphaFromStorage(),
   svgSide: null,
   svgKey: 0,
   threads: [],
@@ -449,6 +455,37 @@ function pinsFromStorage(): boolean {
   }
 }
 
+function layerAlphaFromStorage(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem("kicad-harness-layer-alpha");
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, number> = {};
+    for (const [layer, value] of Object.entries(parsed as Record<string, unknown>)) {
+      // 1 is the default and is not stored, so an entry always means "translucent".
+      if (typeof value === "number" && Number.isFinite(value)
+          && value >= MIN_LAYER_ALPHA && value < 1) {
+        out[layer] = value;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function persistLayerAlpha(alpha: Record<string, number>): void {
+  try {
+    if (Object.keys(alpha).length === 0) {
+      localStorage.removeItem("kicad-harness-layer-alpha");
+    } else {
+      localStorage.setItem("kicad-harness-layer-alpha", JSON.stringify(alpha));
+    }
+  } catch {
+    // storage disabled
+  }
+}
+
 function hiddenLayersFromStorage(): string[] {
   try {
     const raw = localStorage.getItem("kicad-harness-hidden-layers");
@@ -482,6 +519,35 @@ export function showAllLayers(): void {
   } catch {
     // storage disabled
   }
+}
+
+/** Draw one layer translucently, so what is underneath it stays readable (persisted). */
+export function setLayerAlpha(layer: string, alpha: number): void {
+  if (!knownLayers.has(layer) || !Number.isFinite(alpha)) return;
+  const clamped = Math.min(1, Math.max(MIN_LAYER_ALPHA, Math.round(alpha * 100) / 100));
+  const next = { ...getStore().layerAlpha };
+  if (clamped >= 1) {
+    delete next[layer];
+  } else {
+    next[layer] = clamped;
+  }
+  setStore({ layerAlpha: next });
+  persistLayerAlpha(next);
+}
+
+/** Make one layer — or every layer — fully opaque again. */
+export function resetLayerAlpha(layer?: string): void {
+  const current = getStore().layerAlpha;
+  if (!layer) {
+    setStore({ layerAlpha: {} });
+    persistLayerAlpha({});
+    return;
+  }
+  if (!(layer in current)) return;
+  const next = { ...current };
+  delete next[layer];
+  setStore({ layerAlpha: next });
+  persistLayerAlpha(next);
 }
 
 /** Show/hide review-comment pins (persisted). */

@@ -558,10 +558,14 @@ These texts are not just documentation; they are applied to every run:
     B.Cu→B.Mask→B.SilkS→F.Cu→F.Mask→F.SilkS→Edge.Cuts. Back layers are requested with
     `mirror=false`, so they stay at board coordinates and register with the front layers; the
     back side therefore reads through the board, mirrored, and the two sides line up.
-  - A KiCad-style panel on the right lists both sides' layers and the shared Edge.Cuts, and
-    toggles each one (persisted); hidden layers are not painted and their entities are not
-    pickable. The Front/Back buttons flip the finished stack as a whole: flipping mirrors every
-    layer together and reverses the paint order, so the side facing the viewer is on top.
+  - A KiCad-style panel on the right lists both sides' layers and the shared Edge.Cuts. Each
+    row has two independent settings, both persisted in `localStorage`: the checkbox shows or
+    hides the layer (hidden layers are not painted and their entities are not pickable), and a
+    slider makes it translucent (10-100% opacity, double-click to reset, an "opaque" button
+    restoring every layer). Translucency is a rendering property, so a dense copper pour can stay
+    on screen as context under the silkscreen being worked on. The Front/Back buttons flip the
+    finished stack as a whole: flipping mirrors every layer together and reverses the paint
+    order, so the side facing the viewer is on top.
     `?tab=bom|schematic|board` in the page URL selects the main section.
   - Draws an overlay `<svg>` in the same mm coordinate system, built from `GET .../rev/{rev}/index`:
     - footprints: bbox rects, visually invisible;
