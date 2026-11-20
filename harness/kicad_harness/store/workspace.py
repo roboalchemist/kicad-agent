@@ -608,6 +608,12 @@ class Workspace:
         path = self.path / GOAL_MET_FILE
         with self.lock:
             path.parent.mkdir(parents=True, exist_ok=True)
+            # Workspaces created before the note existed have no ignore entry; without it the
+            # note shows up as a dirty file forever.
+            gitignore = self.path / ".gitignore"
+            if gitignore.is_file() and ".harness/" not in gitignore.read_text(encoding="utf-8"):
+                with gitignore.open("a", encoding="utf-8") as stream:
+                    stream.write(".harness/\n")
             path.write_text(json.dumps({
                 "sha": version,
                 "when": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
