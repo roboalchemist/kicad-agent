@@ -83,14 +83,30 @@ def _class_blocks(text: str, netclasses: dict[str, Any] | None) -> str:
     defaults = netclasses.get("Default") or {}
     default_width = round(float(defaults.get("width") or 0.2) * 1000)
     default_clearance = round(float(defaults.get("clearance") or 0.2) * 1000)
+    # Most specific pattern wins, whatever order the classes were declared in, so a catch-all
+    # class cannot swallow the power nets.
+    pairs: list[tuple[str, str]] = []
+    for name, spec in netclasses.items():
+        if name == "Default" or not spec.get("explicit"):
+            continue
+        for pattern in spec.get("nets") or []:
+            pairs.append((str(pattern).lstrip("/"), name))
+
+    def rank(item: tuple[str, str]) -> tuple[int, int]:
+        text = item[0]
+        if "*" not in text:
+            return (0, -len(text))
+        if text == "*":
+            return (2, 0)
+        return (1, -len(text.split("*", 1)[0]))
+
+    pairs.sort(key=rank)
     assigned: dict[str, list[str]] = {}
     remaining: list[str] = []
     for net in nets:
         chosen = None
-        for name, spec in netclasses.items():
-            if name == "Default" or not spec.get("explicit"):
-                continue
-            if any(fnmatch.fnmatchcase(net, pattern) for pattern in (spec.get("nets") or [])):
+        for pattern, name in pairs:
+            if fnmatch.fnmatchcase(net.lstrip("/"), pattern):
                 chosen = name
                 break
         if chosen:

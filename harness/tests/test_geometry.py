@@ -94,3 +94,17 @@ def test_clearance(engine, board, fixture_index):
 
     engine.move_footprint(board, "R3", 9, 10)  # onto U1: shorts
     assert geometry.clearance(engine.index(board), "OUTPUT", "THRESHOLD")["distance"] == 0.0
+
+
+def test_clearance_query_by_region_and_layer(fixture_index) -> None:
+    """Regression: a layer-scoped region query raised KeyError('kind') on bare index records."""
+    from kicad_harness.engine import geometry
+
+    tracks = fixture_index.get("tracks") or []
+    track = next(t for t in tracks if t.get("net"))
+    mid = ((track["x1"] + track["x2"]) / 2, (track["y1"] + track["y2"]) / 2)
+    region = [mid[0] - 1, mid[1] - 1, mid[0] + 1, mid[1] + 1]
+    found = geometry.copper_in_region(fixture_index, region, track["layer"])
+    assert found, "the region contains the track"
+    assert all(item["kind"] for item in found)
+    assert all(track["layer"] in geometry._layers_of(item, fixture_index) for item in found)

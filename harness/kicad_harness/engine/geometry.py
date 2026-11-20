@@ -284,9 +284,11 @@ def copper_in_region(index: dict[str, Any], region: Sequence[float],
         for ent in index.get(key, []):
             if not ent.get("net"):
                 continue
-            if layer and not _on_layer(ent, layer):
-                continue
+            # Tag first: the index stores bare records, and the layer/geometry helpers dispatch
+            # on ``kind``. Filtering before tagging raised KeyError on a layer-scoped query.
             tagged = _with_kind(ent, kind)
+            if layer and not _on_layer(tagged, layer):
+                continue
             if _intersects(tagged, box_region):
                 out.append(tagged)
     return out

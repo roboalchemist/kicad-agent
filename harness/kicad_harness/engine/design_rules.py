@@ -6,6 +6,11 @@ to it without guessing. The rules are deliberately operational, not a full DRC e
 
 - a net class gives the width (and clearance/impedance target) new tracks use, and ``check``
   reports any track narrower than its class;
+- a net class may declare the current it carries (``current_a``); the width that current needs
+  is derived from the stackup's copper weight and temperature rise, and ``check`` reports any
+  track that cannot carry it;
+- a declared class that matches no net on the board is reported, so a typo can never make a
+  rule quietly apply to nothing;
 - a stackup declares the layer count/material/thickness and is compared with the board's copper
   layers.
 """
@@ -150,19 +155,49 @@ def save(ws, rules: dict[str, Any]) -> dict[str, Any]:
     return rules
 
 
+def normalize_net(name: str) -> str:
+    """Kicad reports net names with a leading ``/`` in some places and without it in others.
+
+    The agent writes "+5V" the way the schematic shows it; the pick index and the DSN report
+    "/+5V" (or the reverse, depending on the exporter). A class pattern must match both, or the
+    declaration silently applies to nothing and the board keeps its old widths.
+    """
+    return str(name or "").lstrip("/")
+
+
 def _matches(pattern: str, net: str) -> bool:
+    pattern, net = normalize_net(pattern), normalize_net(net)
     if pattern in ("*", ""):
         return True
-    return re.fullmatch(re.escape(pattern).replace(r"\*", ".*"), net or "") is not None
+    return re.fullmatch(re.escape(pattern).replace(r"\*", ".*"), net) is not None
+
+
+def pattern_rank(pattern: str) -> tuple[int, int]:
+    """Sort key: exact patterns first, then prefixes by length, then the universal ``*``.
+
+    Declaration order must not decide which class wins: a board that declares POWER (+5V) and
+    then a catch-all class would otherwise route +5V at the catch-all width. This is also how
+    KiCad resolves netclass patterns (a specific pattern beats a wildcard).
+    """
+    text = normalize_net(pattern)
+    if "*" not in text:
+        return (0, -len(text))
+    if text == "*":
+        return (2, 0)
+    return (1, -len(text.split("*", 1)[0]))
 
 
 def class_for(rules: dict[str, Any], net: str) -> tuple[str, dict[str, Any]]:
-    """The first net class whose pattern matches ``net`` (Default last)."""
+    """The most specific net class whose pattern matches ``net`` (Default last)."""
     classes = rules.get("netclasses") or {}
-    for name, spec in classes.items():
-        if name == "Default":
-            continue
-        if any(_matches(pattern, net) for pattern in spec.get("nets") or []):
+    pairs = [
+        (pattern, name, spec)
+        for name, spec in classes.items()
+        if name != "Default"
+        for pattern in spec.get("nets") or []
+    ]
+    for pattern, name, spec in sorted(pairs, key=lambda item: pattern_rank(item[0])):
+        if _matches(pattern, net):
             return name, spec
     return "Default", classes.get("Default") or DEFAULT["netclasses"]["Default"]
 
@@ -172,11 +207,47 @@ def _microstrip_z0(width_mm: float, er: float, height_mm: float) -> float:
     return 87.0 / math.sqrt(er + 1.41) * math.log(5.98 * height_mm / (0.8 * width_mm + 0.035))
 
 
+def required_trace_width(current_a: float, copper_oz: float = 1.0, temp_rise_c: float = 20.0,
+                         internal: bool = False) -> float:
+    """The trace width (mm) that carries ``current_a`` at ``temp_rise_c`` (IPC-2221).
+
+    I = k * dT^0.44 * A^0.725 with A in square mils; external k = 0.048, internal k = 0.024,
+    1 oz of copper is 1.378 mil thick. This is the chart in curve form, good enough to hold a
+    board to "traces meet their power needs"; it is not a thermal simulation.
+    """
+    current = float(current_a)
+    if current <= 0:
+        raise ValueError("current must be positive")
+    k = 0.024 if internal else 0.048
+    area_mil2 = (current / (k * float(temp_rise_c) ** 0.44)) ** (1 / 0.725)
+    thickness_mil = max(float(copper_oz), 0.5) * 1.378
+    return round(area_mil2 / thickness_mil * 0.0254, 3)
+
+
+def class_required_width(spec: dict[str, Any], rules: dict[str, Any] | None = None) -> float | None:
+    """The width a class demands: explicit, or derived from the current it declares."""
+    if spec.get("required_width"):
+        return float(spec["required_width"])
+    current = spec.get("current_a")
+    if not current:
+        return None
+    stackup = (rules or {}).get("stackup") or {}
+    return max(
+        float(spec.get("width") or 0),
+        required_trace_width(float(current), float(stackup.get("copper_weight") or 1.0),
+                             float(stackup.get("temp_rise_c") or 20.0)),
+    )
+
+
 def violations(index: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, Any]]:
-    """Tracks narrower than their class, and a stackup that disagrees with the copper layers."""
+    """Tracks narrower than their class or their declared current, an unused class, and a
+    stackup that disagrees with the copper layers."""
     out: list[dict[str, Any]] = []
+    matched: set[str] = set()
     for track in index.get("tracks", []):
         name, spec = class_for(rules, track.get("net") or "")
+        if name != "Default":
+            matched.add(name)
         if not spec.get("explicit"):
             continue  # the implicit Default class is not a rule the board must meet
         width = float(track.get("width") or 0)
@@ -188,6 +259,27 @@ def violations(index: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, A
                 "class": name,
                 "detail": f"{track.get('net') or 'track'} is {width:.2f} mm, class {name} asks {wanted:.2f} mm",
                 "uuid": track.get("uuid"),
+            })
+        needed = class_required_width(spec, rules)
+        if needed and width + 1e-6 < needed:
+            out.append({
+                "type": "current_capacity",
+                "net": track.get("net"),
+                "class": name,
+                "detail": (f"{track.get('net') or 'track'} is {width:.2f} mm but carries "
+                           f"{float(spec.get('current_a')):g} A, which needs {needed:.2f} mm "
+                           f"at {float((rules.get('stackup') or {}).get('temp_rise_c') or 20.0):g}°C rise"),
+                "uuid": track.get("uuid"),
+            })
+    for name, spec in (rules.get("netclasses") or {}).items():
+        if name == "Default" or not spec.get("explicit") or name in matched:
+            continue
+        if index.get("tracks") or index.get("pads"):
+            out.append({
+                "type": "class_coverage",
+                "class": name,
+                "detail": (f"class {name} ({spec.get('width')} mm, nets {spec.get('nets')}) "
+                           "matches no net on the board — the declaration applies to nothing"),
             })
     stackup = rules.get("stackup")
     if stackup:

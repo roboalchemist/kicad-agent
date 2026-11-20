@@ -713,17 +713,28 @@ def normalize_track_widths(board, classes=None, default=None):
     import fnmatch
 
     patterns: list[tuple[str, float]] = []
-    # Specific classes win over broad ones, whatever order the caller passed them in.
-    ordered = sorted(classes or [],
-                     key=lambda spec: any("*" in str(p) for p in (spec.get("nets") or [])))
-    for spec in ordered:
+    for spec in classes or []:
         width = _num(spec.get("width"), "width", positive=True) if spec.get("width") else None
         for pattern in _as_list(spec.get("nets") or [], "nets"):
             if width:
-                patterns.append((str(pattern), width))
+                # Net names carry a leading "/" in the index and sometimes not in the DSN.
+                patterns.append((str(pattern).lstrip("/"), width))
+
+    def rank(item):
+        text = item[0]
+        if "*" not in text:
+            return (0, -len(text))
+        if text == "*":
+            return (2, 0)
+        return (1, -len(text.split("*", 1)[0]))
+
+    # Most specific pattern wins, whatever order the classes were declared in: a catch-all "*"
+    # class must not swallow the power nets.
+    patterns.sort(key=rank)
     fallback = _num(default, "default", positive=True) if default else None
 
     def target(net: str) -> float | None:
+        net = str(net or "").lstrip("/")
         for pattern, width in patterns:
             if fnmatch.fnmatchcase(net, pattern):
                 return width

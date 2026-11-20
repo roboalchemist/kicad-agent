@@ -471,3 +471,73 @@ def test_native_schematic_keeps_adjacent_pins_on_separate_nets(tmp_path: Path) -
         "CHN3": {("U3", "6"), ("U4", "3")},
     }.items():
         assert {tuple(member) for member in netlist["nets"]["/" + channel]} == pins
+
+
+def test_the_most_specific_net_class_wins_regardless_of_declaration_order() -> None:
+    """A catch-all class declared before the power ones must not swallow them."""
+    rules = {"netclasses": {
+        "Default": {"nets": ["*"], "width": 0.25, "clearance": 0.2, "explicit": False},
+        "LOGIC": {"nets": ["CHN*", "SCL"], "width": 0.25, "clearance": 0.2, "explicit": True},
+        "POWER": {"nets": ["+5V"], "width": 1.0, "clearance": 0.35, "explicit": True},
+        "SW20V": {"nets": ["VIN20", "OUT*"], "width": 1.5, "clearance": 0.35, "explicit": True},
+    }}
+    for net, expected in {
+        "/+5V": "POWER", "/VIN20": "SW20V", "/OUT4": "SW20V",
+        "/CHN2": "LOGIC", "/SCL": "LOGIC", "/PUX5": "Default",
+    }.items():
+        assert design_rules.class_for(rules, net)[0] == expected, net
+    # And the pattern ranking itself is exact > prefix > catch-all.
+    ranked = sorted(["*", "OUT*", "OUTPUT*", "+5V", "P20V"], key=design_rules.pattern_rank)
+    assert ranked[-1] == "*"
+    assert ranked.index("OUTPUT*") < ranked.index("OUT*")
+    assert {"+5V", "P20V"} <= set(ranked[:2])
+
+
+def test_net_class_patterns_match_with_or_without_leading_slash() -> None:
+    """Regression: patterns like "+5V" never matched "/+5V", so power classes applied to nothing."""
+    rules = {"netclasses": {
+        "Default": {"nets": ["*"], "width": 0.25, "clearance": 0.2, "explicit": False},
+        "POWER": {"nets": ["+5V", "/GND"], "width": 1.0, "clearance": 0.3, "explicit": True},
+        "SW20V": {"nets": ["/P20V", "OUT*"], "width": 1.5, "clearance": 0.3, "explicit": True},
+    }}
+    for net, expected in {
+        "/+5V": "POWER", "+5V": "POWER",
+        "/GND": "POWER", "GND": "POWER",
+        "/P20V": "SW20V", "P20V": "SW20V",
+        "/OUT3": "SW20V", "OUT3": "SW20V",
+        "/SCL": "Default",
+    }.items():
+        assert design_rules.class_for(rules, net)[0] == expected, net
+
+
+def test_trace_width_rules_see_the_power_problem() -> None:
+    """The three ways a thin power trace used to hide, all of which must be reported."""
+    rules = {"netclasses": {
+        "Default": {"nets": ["*"], "width": 0.25, "clearance": 0.2, "explicit": False},
+        "POWER": {"nets": ["+5V"], "width": 0.8, "current_a": 2.0, "explicit": True},
+        "SW20V": {"nets": ["P20V"], "width": 1.0, "explicit": True},
+    }, "stackup": {"copper_weight": 1.0, "temp_rise_c": 20.0}}
+    # A declared class whose patterns match nothing is invisible to every other rule.
+    index = {"tracks": [{"net": "/SCL", "width": 0.25, "uuid": "t1"}]}
+    # One finding per declared class that matches nothing (POWER and SW20V here).
+    kinds = [v["type"] for v in design_rules.violations(index, rules)]
+    assert kinds == ["class_coverage", "class_coverage"], kinds
+
+    # A power track that exists but is thinner than its class *and* its current.
+    index = {"tracks": [
+        {"net": "/+5V", "width": 0.25, "uuid": "t2"},
+        {"net": "/P20V", "width": 0.25, "uuid": "t3"},
+    ]}
+    kinds = {v["type"] for v in design_rules.violations(index, rules)}
+    assert {"trace_width", "current_capacity"} <= kinds, kinds
+
+
+def test_required_trace_width_follows_ipc_2221() -> None:
+    """More current needs more copper; more copper weight needs less width."""
+    from kicad_harness.engine.design_rules import required_trace_width as width
+
+    assert width(3.0) == pytest.approx(0.898, abs=0.01)
+    assert width(5.0) > width(3.0) > width(1.0) > width(0.5)
+    assert width(3.0, copper_oz=2.0) < width(3.0, copper_oz=1.0)
+    assert width(3.0, temp_rise_c=20.0) < width(3.0, temp_rise_c=10.0)
+    assert width(1.0, internal=True) > width(1.0)

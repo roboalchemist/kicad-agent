@@ -853,3 +853,21 @@ def test_net_changes_reports_pins_that_moved_between_nets() -> None:
         {"net": "A", "gained": ["U3.1"]},
         {"net": "B", "lost": ["U3.1"]},
     ]
+
+
+async def test_declaring_a_net_class_re_widths_tracks_already_routed(services, design) -> None:
+    """A declaration is a statement about the copper that exists, not only about the next track."""
+    name, ws = design
+    services.engine.add_track(str(ws.board_path), "VCC", [[2, 2], [9, 2]], width=0.25, layer="F.Cu")
+    script = Script([
+        [("set_net_class", {"name": "POWER", "nets": ["VCC"], "width": 1.2, "clearance": 0.3})],
+        "done",
+    ])
+    agent = build_agent()
+    with agent.override(model=script.model()):
+        result = await agent.run("make power thicker", deps=deps_for(services, name))
+    assert result.output == "done"
+    board_hash, _ = services.artifacts.materialize(ws.board_path.read_bytes())
+    widths = [float(t["width"]) for t in services.artifacts.index(board_hash)["tracks"]
+              if str(t.get("net") or "").lstrip("/") == "VCC"]
+    assert widths and min(widths) >= 1.2, widths

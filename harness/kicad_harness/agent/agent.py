@@ -584,6 +584,19 @@ def net_changes(before: dict[str, str], after: dict[str, str], limit: int = 12) 
     return out
 
 
+def _apply_class_widths(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
+    """Set every track to its net class width on the working board (widening only)."""
+    from kicad_harness.engine import design_rules
+
+    ws = _ws(ctx)
+    rules = design_rules.load(ws)
+    classes = [{"nets": spec.get("nets") or [], "width": spec.get("width")}
+               for spec in (rules.get("netclasses") or {}).values() if spec.get("width")]
+    default = ((rules.get("netclasses") or {}).get("Default") or {}).get("width")
+    return ctx.deps.services.engine.call("normalize_track_widths", board=str(ws.board_path),
+                                         classes=classes, default=default)
+
+
 async def _schematic_edit(
     ctx: RunContext[HarnessDeps],
     tool: str,
@@ -2102,24 +2115,70 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         width: float = 0.25,
         clearance: float = 0.2,
         impedance: float | None = None,
+        current_a: float | None = None,
     ) -> ToolReturn:
-        """Declare a net class (e.g. name="POWER", nets=["+5V","GND"], width=0.8).
+        """Declare a net class: name, net patterns (may use `*`), and its rules.
 
-        New tracks on those nets default to this width, `check` reports any narrower track, and
-        the impedance target is recorded for high-speed nets. Net patterns may use `*`."""
+        `width` is the track width to route at; `clearance` the spacing; `impedance` a target for
+        high-speed nets; `current_a` the current the net carries — the width that current needs is
+        then derived from the stackup (IPC-2221, copper weight and temperature rise) and `check`
+        holds every track on those nets to it, so power nets cannot quietly stay thin. `check`
+        also reports a class whose patterns match no net, and existing tracks are re-widthed to
+        the class now that patterns match either slashed or bare net names."""
         from kicad_harness.engine import design_rules
 
         ws = _ws(ctx)
         rules = await asyncio.to_thread(design_rules.load, ws)
-        rules["netclasses"][name] = {"nets": nets, "width": width, "clearance": clearance,
-                                     "impedance": impedance, "explicit": True}
+        spec = {"nets": nets, "width": width, "clearance": clearance,
+                "impedance": impedance, "explicit": True}
+        if current_a:
+            if current_a <= 0:
+                return ToolReturn(return_value={"ok": False, "error": "current_a must be positive"})
+            spec["current_a"] = float(current_a)
+            spec["required_width"] = design_rules.class_required_width(spec, rules)
+        rules["netclasses"][name] = spec
         await asyncio.to_thread(design_rules.save, ws, rules)
+        # Declaring a class is a statement about the copper that exists, not just about the next
+        # track drawn: apply it now, or the board keeps the old (thin) routing while the rules say
+        # otherwise and `check` reports every track as a violation.
+        applied = None
+        if ws.board_path.is_file():
+            try:
+                applied = await asyncio.to_thread(_apply_class_widths, ctx)
+            except Exception as exc:
+                applied = {"ok": False, "error": _engine_error_text(exc)}
         version = await asyncio.to_thread(
             lambda: ws.commit(f"Declare net class {name}", author="agent",
                               trailers=_trailers(ctx, "set_net_class")))
         return ToolReturn(return_value={"ok": True, "class": name, "nets": nets, "width": width,
                                         "clearance": clearance, "impedance": impedance,
-                                        "version": version})
+                                        "current_a": spec.get("current_a"),
+                                        "required_width": spec.get("required_width"),
+                                        "widths_applied": applied, "version": version})
+
+    @agent.tool(sequential=True)
+    async def apply_netclass_widths(ctx: RunContext[HarnessDeps]) -> ToolReturn:
+        """Apply every declared net class width to the tracks already routed.
+
+        Tracks are only ever widened, never thinned: a track that is already at least its class
+        width is left alone. Widening can break clearances, so re-route afterwards (`rip_up` +
+        `autoroute`) when `drc` then reports errors.
+        """
+        ws = _ws(ctx)
+        if not ws.board_path.is_file():
+            return ToolReturn(return_value={"ok": False, "error": "this design has no board yet"})
+        try:
+            applied = await asyncio.to_thread(_apply_class_widths, ctx)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
+        version = await asyncio.to_thread(
+            lambda: ws.commit("Apply net class widths", author="agent",
+                              trailers=_trailers(ctx, "apply_netclass_widths")))
+        await _sync_state(ctx, bump=False)
+        if version is not None and ctx.deps.on_commit:
+            ctx.deps.on_commit({"tool": "apply_netclass_widths", **_version_brief(version)})
+        return ToolReturn(return_value={"ok": True, **applied, "version": _version_brief(version)},
+                          metadata=[_snapshot(ctx.deps.state)])
 
     @agent.tool
     async def set_stackup(
