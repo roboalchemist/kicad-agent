@@ -354,7 +354,7 @@ async def _adversarial_audit(ctx: RunContext[HarnessDeps], model: Any = None) ->
     st.judge_findings = verdict.findings[:20]
     if verdict.complete:
         return True, ""
-    return False, judge_mod.summarise(verdict)
+    return False, judge_mod.gating_gaps(verdict)
 
 async def _judge_facts(ctx: RunContext[HarnessDeps]) -> dict[str, Any]:
     """The evidence packet: measured facts only, never the worker's claims."""

@@ -568,3 +568,23 @@ def summarise(verdict: JudgeVerdict) -> str:
     if verdict.mutations.missed:
         return "judge checks missed mutations: " + ", ".join(verdict.mutations.missed)
     return "; ".join(verdict.findings)[:3000] or "none"
+
+
+def gating_gaps(verdict: JudgeVerdict) -> str:
+    """Only the findings that actually block completion.
+
+    "should" rules are advice: listing them in the retry message sent the agent redesigning the
+    board to chase component heights while a real gating failure (a thin power trace) was the
+    thing standing between it and done.
+    """
+    if verdict.error:
+        return f"the judge could not run to completion: {verdict.error}"
+    if verdict.mutations.missed:
+        return "judge checks missed mutations: " + ", ".join(verdict.mutations.missed)
+    gaps = [finding for finding in verdict.findings
+            if any(r.severity == "must" and f"[{r.id}]" in finding for r in verdict.results)]
+    advisory = [finding for finding in verdict.findings if finding not in gaps]
+    text = "; ".join(gaps) if gaps else "no gating rules fail"
+    if advisory:
+        text += f". Advisory (non-gating, leave alone unless trivial): {'; '.join(advisory)[:800]}"
+    return text[:3000]

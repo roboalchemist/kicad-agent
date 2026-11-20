@@ -137,3 +137,30 @@ async def test_a_human_waiver_can_clear_a_finding_but_an_agent_waiver_cannot() -
     facts["waivers"] = {"pcb-placement#Priority Order": {"author": "agent", "reason": "lgtm"}}
     blocked = await judge.assess(facts, object(), reviewer=partial)
     assert next(r for r in blocked.results if r.id == "pcb-placement#Priority Order").status == "fail"
+
+
+def test_gating_gaps_list_must_failures_but_not_advice() -> None:
+    """The retry message must not send the agent redesigning for should-severity advice."""
+    from kicad_harness.agent.judge import JudgeVerdict, RuleResult, gating_gaps
+
+    mutations = judge.mutations()
+    verdict = JudgeVerdict(
+        results=[
+            RuleResult(id="design_rules.violations", title="declared rules", severity="must",
+                       source="auto", status="fail",
+                       detail="+5V is 0.50 mm but carries 2 A, needs 0.51 mm"),
+            RuleResult(id="mechanical.height", title="component heights", severity="should",
+                       source="judge", status="fail", detail="J42 has no declared height"),
+        ],
+        mutations=mutations,
+    )
+    text = gating_gaps(verdict)
+    assert "design_rules.violations" in text and "0.50 mm" in text
+    assert "J42" in text and "Advisory" in text
+    # And a clean verdict says so plainly instead of listing nothing.
+    ok = JudgeVerdict(results=[
+        RuleResult(id="design_rules.violations", title="declared rules", severity="must",
+                   source="auto", status="pass", measured=0, limit=0, comparison="max",
+                   evidence=["0 rule violations"]),
+    ], mutations=mutations)
+    assert "no gating rules fail" in gating_gaps(ok)
