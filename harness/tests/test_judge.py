@@ -28,7 +28,7 @@ def test_a_pass_needs_evidence_and_cannot_be_below_its_limit() -> None:
 
 def test_complete_is_derived_and_fails_closed() -> None:
     mutations = judge.mutations()
-    assert mutations.ok and mutations.total == 6
+    assert mutations.ok and mutations.total == 7
     verdict = judge.JudgeVerdict(results=[_pass("a")], mutations=mutations)
     assert verdict.complete is True
 

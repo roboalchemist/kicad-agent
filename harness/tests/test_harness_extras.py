@@ -519,9 +519,10 @@ def test_trace_width_rules_see_the_power_problem() -> None:
     }, "stackup": {"copper_weight": 1.0, "temp_rise_c": 20.0}}
     # A declared class whose patterns match nothing is invisible to every other rule.
     index = {"tracks": [{"net": "/SCL", "width": 0.25, "uuid": "t1"}]}
-    # One finding per declared class that matches nothing (POWER and SW20V here).
+    # One finding per declared class that matches nothing (POWER and SW20V here), plus
+    # POWER's current having no estimate behind it.
     kinds = [v["type"] for v in design_rules.violations(index, rules)]
-    assert kinds == ["class_coverage", "class_coverage"], kinds
+    assert kinds.count("class_coverage") == 2 and "power_estimate_missing" in kinds, kinds
 
     # A power track that exists but is thinner than its class *and* its current.
     index = {"tracks": [
@@ -541,3 +542,61 @@ def test_required_trace_width_follows_ipc_2221() -> None:
     assert width(3.0, copper_oz=2.0) < width(3.0, copper_oz=1.0)
     assert width(3.0, temp_rise_c=20.0) < width(3.0, temp_rise_c=10.0)
     assert width(1.0, internal=True) > width(1.0)
+
+
+def test_power_currents_must_be_estimated_and_must_match_the_estimate() -> None:
+    """The estimate rule: a declared amperage needs evidence, and the evidence must agree."""
+    base = {"netclasses": {
+        "Default": {"nets": ["*"], "width": 0.25, "clearance": 0.2, "explicit": False},
+    }, "stackup": {"copper_weight": 1.0, "temp_rise_c": 20.0}}
+
+    def check(spec, footprints=()):
+        rules = dict(base, netclasses={**base["netclasses"],
+                                       "POWER": {"nets": ["+5V"], "explicit": True, **spec}})
+        index = {"tracks": [{"net": "/+5V", "width": spec.get("width", 0.5), "uuid": "t"}],
+                 "footprints": list(footprints)}
+        return design_rules.violations(index, rules)
+
+    # A declared current with no estimate behind it is a guess.
+    kinds = {v["type"] for v in check({"width": 0.5, "current_a": 2.0})}
+    assert "power_estimate_missing" in kinds
+
+    # Estimates cite real parts; F1 is a 2 A fuse ("2A" in its value).
+    f1 = {"ref": "F1", "value": "2A"}
+
+    honest = {"width": 0.9, "current_a": 2.0,
+              "estimate": [{"refs": ["F1"], "role": "upstream fuse", "amps": 2.0, "kind": "cap"}]}
+    assert check(honest, [f1]) == [], check(honest, [f1])
+
+    # The cap may not claim more than the protective device allows.
+    kinds = {v["type"] for v in check({"width": 0.9, "current_a": 5.0,
+                                       "estimate": [{"refs": ["F1"], "role": "fuse", "amps": 5.0,
+                                                     "kind": "cap"}]}, [f1])}
+    assert "power_cap_overrated" in kinds
+
+    # Loads add, and the declared current may not sit below its own estimate.
+    coils = {"width": 0.5, "current_a": 0.3,
+             "estimate": [{"refs": ["K1", "K2", "K3", "K4", "K5"], "role": "relay coils",
+                           "amps": 0.08, "count": 5, "kind": "load"}]}
+    kinds = {v["type"] for v in check(coils)}
+    assert "power_estimate_underdeclared" in kinds
+
+    # Unknown refs are rejected: fabricated evidence is worse than no evidence.
+    kinds = {v["type"] for v in check({"width": 0.5, "current_a": 0.4,
+                                       "estimate": [{"refs": ["K9"], "role": "coil",
+                                                     "amps": 0.4, "kind": "load"}]})}
+    assert "power_estimate_ref_unknown" in kinds
+
+    # And the required width follows the estimate even when current_a was underdeclared.
+    spec = {"width": 0.4, "current_a": 1.0,
+            "estimate": [{"refs": [], "role": "loads", "amps": 3.0, "kind": "load"}]}
+    assert design_rules.class_required_width(spec, base) >= 0.898
+    assert design_rules.estimated_amps(spec) == 3.0
+
+
+def test_power_estimate_mutation_is_caught() -> None:
+    from kicad_harness.agent.judge import mutations
+
+    report = mutations()
+    assert report.ok and report.total >= 7
+    assert "power_estimate" in report.caught

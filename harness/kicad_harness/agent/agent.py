@@ -2107,7 +2107,9 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
 
         return await _edit(ctx, "place_test_points", f"Place {len(nets)} test point(s)", work)
 
-    @agent.tool
+    # sequential: it is a read-modify-write of the shared rules file, and a parallel batch of
+    # declarations lost updates (the last writer silently erased the other two classes).
+    @agent.tool(sequential=True)
     async def set_net_class(
         ctx: RunContext[HarnessDeps],
         name: str,
@@ -2116,28 +2118,63 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         clearance: float = 0.2,
         impedance: float | None = None,
         current_a: float | None = None,
+        estimate: list[dict] | None = None,
     ) -> ToolReturn:
         """Declare a net class: name, net patterns (may use `*`), and its rules.
 
         `width` is the track width to route at; `clearance` the spacing; `impedance` a target for
-        high-speed nets; `current_a` the current the net carries — the width that current needs is
-        then derived from the stackup (IPC-2221, copper weight and temperature rise) and `check`
-        holds every track on those nets to it, so power nets cannot quietly stay thin. `check`
-        also reports a class whose patterns match no net, and existing tracks are re-widthed to
-        the class now that patterns match either slashed or bare net names."""
+        high-speed nets. For a power net, `current_a` is the maximum current it must carry and
+        `estimate` is the evidence for that number: entries `{"refs": ["F1"], "role": "upstream
+        fuse", "amps": 2.0, "kind": "cap"}` (a protective device or source limit — what flows can
+        never exceed it) or `{"refs": ["K1".."K5"], "role": "relay
+        coils", "amps": 0.08, "count": 5, "kind": "load"}` (per-unit amps times count; loads
+        add across entries). The width that current needs is derived from the stackup (IPC-2221,
+        copper weight, temperature rise) and `check` holds every track to it, so a power net can
+        neither stay thin nor carry a current nobody derived. Estimates must cite real parts, a
+        cap may not exceed the part's rating (parsed from its value, e.g. a fuse "2A"), and the
+        declared current may not be below the estimate. `check` also reports a class whose
+        patterns match no net, and existing tracks are re-widthed to the class."""
         from kicad_harness.engine import design_rules
 
         ws = _ws(ctx)
-        rules = await asyncio.to_thread(design_rules.load, ws)
-        spec = {"nets": nets, "width": width, "clearance": clearance,
-                "impedance": impedance, "explicit": True}
-        if current_a:
-            if current_a <= 0:
-                return ToolReturn(return_value={"ok": False, "error": "current_a must be positive"})
-            spec["current_a"] = float(current_a)
+
+        def declare() -> dict:
+            with ws.lock:
+                rules = design_rules.load(ws)
+                spec = {"nets": nets, "width": width, "clearance": clearance,
+                        "impedance": impedance, "explicit": True}
+            if current_a:
+                if current_a <= 0:
+                    return ToolReturn(return_value={"ok": False, "error": "current_a must be positive"})
+                spec["current_a"] = float(current_a)
+            if estimate:
+                cleaned: list[dict] = []
+                for entry in estimate:
+                    amps = float(entry.get("amps") or 0)
+                    kind = str(entry.get("kind") or "load")
+                    if amps <= 0:
+                        return ToolReturn(return_value={"ok": False, "error":
+                                                       "every estimate entry needs positive amps"})
+                    if kind not in ("load", "cap"):
+                        return ToolReturn(return_value={"ok": False, "error":
+                                                       f"estimate kind must be 'load' or 'cap', got {kind!r}"})
+                    count = int(entry.get("count") or 1)
+                    if count < 1:
+                        return ToolReturn(return_value={"ok": False, "error": "estimate count must be >= 1"})
+                    refs = [str(r) for r in (entry.get("refs") or [])]
+                    cleaned.append({"refs": refs, "role": str(entry.get("role") or ""),
+                                    "amps": amps, "kind": kind, "count": count})
+                spec["estimate"] = cleaned
+                spec["estimated_a"] = design_rules.estimated_amps(spec)
             spec["required_width"] = design_rules.class_required_width(spec, rules)
-        rules["netclasses"][name] = spec
-        await asyncio.to_thread(design_rules.save, ws, rules)
+            rules["netclasses"][name] = spec
+            design_rules.save(ws, rules)
+            return spec
+
+        try:
+            spec = await asyncio.to_thread(declare)
+        except Exception as exc:
+            return ToolReturn(return_value={"ok": False, "error": _engine_error_text(exc)})
         # Declaring a class is a statement about the copper that exists, not just about the next
         # track drawn: apply it now, or the board keeps the old (thin) routing while the rules say
         # otherwise and `check` reports every track as a violation.
@@ -2153,6 +2190,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return ToolReturn(return_value={"ok": True, "class": name, "nets": nets, "width": width,
                                         "clearance": clearance, "impedance": impedance,
                                         "current_a": spec.get("current_a"),
+                                        "estimate": spec.get("estimate"),
+                                        "estimated_a": spec.get("estimated_a"),
                                         "required_width": spec.get("required_width"),
                                         "widths_applied": applied, "version": version})
 
@@ -2180,7 +2219,8 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         return ToolReturn(return_value={"ok": True, **applied, "version": _version_brief(version)},
                           metadata=[_snapshot(ctx.deps.state)])
 
-    @agent.tool
+    # sequential: same shared-file read-modify-write as set_net_class.
+    @agent.tool(sequential=True)
     async def set_stackup(
         ctx: RunContext[HarnessDeps], layers: int, material: str = "FR4",
         thickness: float = 1.6, impedance: dict | None = None,
@@ -2192,11 +2232,18 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
         from kicad_harness.engine import design_rules
 
         ws = _ws(ctx)
-        rules = await asyncio.to_thread(design_rules.load, ws)
-        rules["stackup"] = {"layers": layers, "material": material, "thickness": thickness,
-                            "impedance": impedance or {}, "er": er,
-                            "dielectric_height": dielectric_height, "copper_weight": copper_weight}
-        await asyncio.to_thread(design_rules.save, ws, rules)
+
+        stackup = {"layers": layers, "material": material, "thickness": thickness,
+                   "impedance": impedance or {}, "er": er,
+                   "dielectric_height": dielectric_height, "copper_weight": copper_weight}
+
+        def write_stackup() -> None:
+            with ws.lock:
+                rules = design_rules.load(ws)
+                rules["stackup"] = stackup
+                design_rules.save(ws, rules)
+
+        await asyncio.to_thread(write_stackup)
         applied = False
         if ws.board_path.is_file():
             try:
@@ -2208,7 +2255,7 @@ def build_agent(model: str | None = None) -> Agent[HarnessDeps, str | DeferredTo
                 applied = True
             except Exception:
                 applied = False
-        return ToolReturn(return_value={"ok": True, **rules["stackup"], "board_layers_set": applied})
+        return ToolReturn(return_value={"ok": True, **stackup, "board_layers_set": applied})
 
     @agent.tool(sequential=True)
     async def export_manufacturing(ctx: RunContext[HarnessDeps]) -> ToolReturn:

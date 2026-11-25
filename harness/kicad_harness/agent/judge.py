@@ -37,7 +37,7 @@ AUTO_META: dict[str, tuple[str, SEVERITY, str]] = {
     "schematic.parity": ("Schematic/board part parity", "must", "pcb-bom-components#BOM Documentation Requirements"),
     "design.sync": ("BOM/schematic/board agreement", "must", "pcb-bom-components#BOM Documentation Requirements"),
     "brief.requirements": ("Brief requirements", "must", "pcb-design-process#Phase Details"),
-    "design_rules.violations": ("Declared width/current/clearance/impedance rules", "must",
+    "design_rules.violations": ("Declared width/current/estimate rules", "must",
                                 "pcb-power#Trace Width (IPC-2152, 1oz copper, 10°C rise)"),
     "manufacturing.package": ("Manufacturing package current", "must", "pcb-design-process#Phase Details"),
     "mechanical.height": ("Component height fit", "should", "pcb-mechanical#Component Height & Enclosure"),
@@ -366,6 +366,15 @@ def mutations() -> MutationReport:
     index = {"tracks": [{"net": "GND", "width": 0.2, "uuid": "t"}],
              "board": {"layers": ["F.Cu", "B.Cu"]}, "nets": ["GND"]}
     checks.append(("track_width", bool(design_rules.violations(index, rules))))
+
+    # A current declared with no estimate behind it must be caught: the whole point of the
+    # estimate rule is that "2 A" nobody derived is a guess.
+    guess = design_rules.load(type("W", (), {"path": "/tmp/judge-mutation"})())
+    guess["netclasses"]["POWER"] = {"nets": ["+5V"], "width": 0.5, "current_a": 2.0,
+                                    "explicit": True}
+    guess_index = {"tracks": [{"net": "/+5V", "width": 0.6, "uuid": "t"}],
+                   "board": {"layers": ["F.Cu", "B.Cu"]}, "nets": ["+5V"], "footprints": []}
+    checks.append(("power_estimate", bool(design_rules.violations(guess_index, guess))))
 
     gap = {"tracks": [
         {"net": "A", "layer": "F.Cu", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "width": 0.2},

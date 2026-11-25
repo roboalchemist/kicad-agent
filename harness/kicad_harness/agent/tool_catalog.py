@@ -56,7 +56,7 @@ TOOLS: dict[str, tuple[str, str]] = {
     "set_component_height": ("board", "Record a part height from its datasheet so the enclosure fit can be checked."),
     "set_enclosure": ("board", "Declare the enclosure height and PCB-to-lid clearance; check reports over-height and unmeasured parts."),
     "apply_netclass_widths": ("board", "Re-width existing tracks to their declared net class widths."),
-    "set_net_class": ("board", "Declare width/clearance/impedance per net group; applies to existing tracks and new ones."),
+    "set_net_class": ("board", "Declare width/clearance per net group; power classes also declare current_a with an estimate citing the parts that set it."),
     "apply_netclass_widths": ("board", "Re-width the tracks already routed to their declared class widths."),
     "set_stackup": ("board", "Declare copper layers, material, er/height and impedance; check compares it with the board."),
     "add_keepout": ("board", "Rule-area keepout: no tracks/vias/pours inside the polygon."),

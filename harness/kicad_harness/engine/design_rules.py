@@ -224,17 +224,49 @@ def required_trace_width(current_a: float, copper_oz: float = 1.0, temp_rise_c: 
     return round(area_mil2 / thickness_mil * 0.0254, 3)
 
 
+def parse_amps(value: str) -> float | None:
+    """Current encoded in a part value ("2A", "500 mA", "1.5A polyfuse"), or None."""
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*(mA|A)\b", str(value or ""), re.IGNORECASE)
+    if not match:
+        return None
+    number = float(match.group(1).replace(",", "."))
+    return number / 1000.0 if match.group(2).lower() == "ma" else number
+
+
+def estimated_amps(spec: dict[str, Any]) -> float | None:
+    """The amperage a class's estimate works out to: loads summed, capped by any protection.
+
+    Estimate entries are ``{"refs": [...], "role": str, "amps": float, "kind": "load"|"cap",
+    "count": N}``. ``amps`` is per unit and ``count`` (default 1) is how many of them there are,
+    so five 0.08 A relay coils are one entry with amps 0.08, count 5. Loads add; a "cap" entry is
+    an upstream protective device or source limit, and what flows can never exceed it.
+    """
+    entries = spec.get("estimate") or []
+    if not entries:
+        return None
+    loads = [float(e.get("amps") or 0) * max(1, int(e.get("count") or 1))
+             for e in entries if e.get("kind", "load") != "cap"]
+    caps = [float(e.get("amps") or 0) for e in entries if e.get("kind") == "cap"]
+    total = sum(amps for amps in loads if amps > 0)
+    if caps:
+        limit = min(amps for amps in caps if amps > 0)
+        total = min(total, limit) if loads else limit
+    return round(total, 3)
+
+
 def class_required_width(spec: dict[str, Any], rules: dict[str, Any] | None = None) -> float | None:
-    """The width a class demands: explicit, or derived from the current it declares."""
+    """The width a class demands: explicit, or derived from the current its estimate supports."""
     if spec.get("required_width"):
         return float(spec["required_width"])
     current = spec.get("current_a")
-    if not current:
+    estimated = estimated_amps(spec)
+    if not current and not estimated:
         return None
     stackup = (rules or {}).get("stackup") or {}
+    amps = max(float(current or 0), float(estimated or 0))
     return max(
         float(spec.get("width") or 0),
-        required_trace_width(float(current), float(stackup.get("copper_weight") or 1.0),
+        required_trace_width(amps, float(stackup.get("copper_weight") or 1.0),
                              float(stackup.get("temp_rise_c") or 20.0)),
     )
 
@@ -280,6 +312,64 @@ def violations(index: dict[str, Any], rules: dict[str, Any]) -> list[dict[str, A
                 "class": name,
                 "detail": (f"class {name} ({spec.get('width')} mm, nets {spec.get('nets')}) "
                            "matches no net on the board — the declaration applies to nothing"),
+            })
+
+    # A current that nobody estimated is a guess. Power classes must justify their amperage with
+    # entries citing real parts, and the estimate must not contradict what it cites.
+    board_refs = {str(f.get("ref") or "").upper() for f in index.get("footprints", [])}
+    for name, spec in (rules.get("netclasses") or {}).items():
+        if not spec.get("explicit") or not spec.get("current_a"):
+            continue
+        estimate = spec.get("estimate") or []
+        if not estimate:
+            out.append({
+                "type": "power_estimate_missing",
+                "class": name,
+                "detail": (f"class {name} declares {spec.get('current_a'):g} A with no estimate: "
+                           "add estimate entries citing the parts that set that current "
+                           "(fuse rating, source limit, or the sum of the loads)"),
+            })
+            continue
+        loads = [float(e.get("amps") or 0) for e in estimate if e.get("kind", "load") != "cap"]
+        caps = [e for e in estimate if e.get("kind") == "cap"]
+        for entry in estimate:
+            for ref in entry.get("refs") or []:
+                if ref and str(ref).upper() not in board_refs:
+                    out.append({
+                        "type": "power_estimate_ref_unknown",
+                        "class": name,
+                        "detail": (f"class {name}'s estimate cites {ref!r}, which is not a part "
+                                   "on the board"),
+                    })
+        for cap in caps:
+            for ref in cap.get("refs") or []:
+                part = next((f for f in index.get("footprints", [])
+                             if str(f.get("ref") or "").upper() == str(ref).upper()), None)
+                rated = parse_amps((part or {}).get("value"))
+                if rated is not None and float(cap.get("amps") or 0) > rated * 1.01:
+                    out.append({
+                        "type": "power_cap_overrated",
+                        "class": name,
+                        "detail": (f"class {name} estimates {float(cap.get('amps')):g} A through "
+                                   f"{ref}, but {ref} is rated {rated:g} A ({part.get('value')})"),
+                    })
+        load_sum = sum(amps for amps in loads if amps > 0)
+        cap_min = min((float(e.get("amps") or 0) for e in caps), default=None)
+        if cap_min is not None and load_sum > cap_min * 1.01:
+            out.append({
+                "type": "power_cap_exceeded",
+                "class": name,
+                "detail": (f"class {name}'s loads sum to {load_sum:g} A but its protective device "
+                           f"allows {cap_min:g} A"),
+            })
+        estimated = estimated_amps(spec)
+        if estimated and float(spec["current_a"]) + 1e-6 < estimated:
+            out.append({
+                "type": "power_estimate_underdeclared",
+                "class": name,
+                "detail": (f"class {name} declares {float(spec['current_a']):g} A but its own "
+                           f"estimate works out to {estimated:g} A — size the trace for the "
+                           "estimate"),
             })
     stackup = rules.get("stackup")
     if stackup:
